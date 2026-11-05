@@ -228,19 +228,33 @@ def check_udev_status(sysfs_info: Optional[UsbSysfsInfo] = None) -> UdevStatus:
         hidraw_node=sysfs_info.hidraw_node,
     )
 
-    if os.path.exists(UDEV_RULE_PATH):
-        st.rule_installed = True
-        txt = read_sysfs_file(UDEV_RULE_PATH).lower()
-        st.rule_content_valid = (
-            "2ca3" in txt and "4011" in txt and ("0666" in txt or "uaccess" in txt)
-        )
-    else:
-        for rp in sorted(glob.glob("/etc/udev/rules.d/*.rules")):
-            txt = read_sysfs_file(rp).lower()
-            if "2ca3" in txt and "4011" in txt:
-                st.rule_installed = True
-                st.rule_path = rp
-                st.rule_content_valid = "0666" in txt or "uaccess" in txt
+    rule_dirs = ["/etc/udev/rules.d", "/var/run/host/etc/udev/rules.d"]
+    direct_paths = [
+        UDEV_RULE_PATH,
+        "/var/run/host/etc/udev/rules.d/99-dji-mic.rules",
+    ]
+    found_direct = False
+    for dp in direct_paths:
+        if os.path.exists(dp):
+            st.rule_installed = True
+            st.rule_path = UDEV_RULE_PATH
+            txt = read_sysfs_file(dp).lower()
+            st.rule_content_valid = (
+                "2ca3" in txt and "4011" in txt and ("0666" in txt or "uaccess" in txt)
+            )
+            found_direct = True
+            break
+
+    if not found_direct:
+        for rdir in rule_dirs:
+            for rp in sorted(glob.glob(os.path.join(rdir, "*.rules"))):
+                txt = read_sysfs_file(rp).lower()
+                if "2ca3" in txt and "4011" in txt:
+                    st.rule_installed = True
+                    st.rule_path = rp.replace("/var/run/host", "")
+                    st.rule_content_valid = "0666" in txt or "uaccess" in txt
+                    break
+            if st.rule_installed:
                 break
 
     if st.usbfs_node and os.path.exists(st.usbfs_node):

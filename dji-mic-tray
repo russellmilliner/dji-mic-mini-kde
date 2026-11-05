@@ -211,6 +211,8 @@ def render_dji_mic_tray_icon(
 
 def ensure_task_manager_icon_files() -> None:
     """Export the rendered tray icon to assets/ and ~/.local/share/icons/hicolor/ so Wayland/KWin Task Manager uses it."""
+    if os.path.exists("/.flatpak-info"):
+        return
     try:
         pix64 = render_dji_mic_pixmap(True, 1, 100, 45, False, 64)
         pix256 = render_dji_mic_pixmap(True, 1, 100, 45, False, 256)
@@ -219,8 +221,11 @@ def ensure_task_manager_icon_files() -> None:
             (HICOLOR_256_PATH, pix256),
             (HICOLOR_64_PATH, pix64),
         ):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pix.save(str(path), "PNG")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                pix.save(str(path), "PNG")
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1808,7 +1813,10 @@ def main() -> None:
     app.setApplicationName("KDE DJI Mic Mini Control")
     app.setApplicationDisplayName("KDE DJI Mic Mini Control")
     app.setOrganizationName("millinr")
-    QGuiApplication.setDesktopFileName("dji-mic-tray")
+    if os.path.exists("/.flatpak-info"):
+        QGuiApplication.setDesktopFileName("io.github.russellmilliner.DjiMicMiniControl")
+    else:
+        QGuiApplication.setDesktopFileName("dji-mic-tray")
     app.setQuitOnLastWindowClosed(False)
 
     ensure_task_manager_icon_files()

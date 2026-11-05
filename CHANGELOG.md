@@ -2,6 +2,11 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
+## [v0.2.0](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.0) — 2026-11-04
+
+### Highlights
+- Added official KDE Plasma 6 Flatpak package (io.github.russellmilliner.DjiMicMiniControl)
+
 ## [v0.1.0](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.1.0) — 2026-11-04
 
 ### Commits

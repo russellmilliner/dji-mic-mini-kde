@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.russellmilliner.DjiMicMiniControl</id>
+  <name>KDE DJI Mic Mini Control</name>
+  <summary>KDE Plasma 6 System Tray, DUML USB Telemetry, Hardware Controller &amp; Desktop Alert Daemon for DJI Mic Mini</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.russellmilliner">
+    <name>Russell Milliner</name>
+  </developer>
+  <description>
+    <p>
+      KDE DJI Mic Mini Control provides a native KDE Plasma 6 / Kirigami 5-tab desktop control center,
+      live system tray battery badge, real-time wireless transmitter VU meters, hardware setting toggles,
+      USB/HID/DUML protocol inspector, and automatic desktop disconnection popup notifications for the
+      DJI Mic Mini (2ca3:4011) on Linux.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.russellmilliner.DjiMicMiniControl.desktop</launchable>
+  <url type="homepage">https://github.com/russellmilliner/dji-mic-mini-kde</url>
+  <url type="bugtracker">https://github.com/russellmilliner/dji-mic-mini-kde/issues</url>
+  <url type="donation">https://ko-fi.com/russellmilliner</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.2.0" date="2026-11-04">
+      <description>
+        <p>Added official KDE Plasma 6 Flatpak package (org.kde.Platform//6.11) alongside native Linux archive.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-11-04">
+      <description>
+        <p>Initial release of KDE DJI Mic Mini Control with DUML v1/v2 USB telemetry, system tray battery badge, and Kirigami 5-tab UI.</p>
+      </description>
+    </release>
+  </releases>
+</component>

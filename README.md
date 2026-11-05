@@ -123,11 +123,15 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0666", 
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0666", TAG+="uaccess"
 ```
 
-### 2. Enable the KDE System Tray Daemon (`systemd --user`)
+### 2. Install via Flatpak (`io.github.russellmilliner.DjiMicMiniControl`) or Systemd User Service
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now dji-mic-tray.service
+# Option A: Build & install the self-contained KDE Plasma 6 Flatpak bundle (org.kde.Platform//6.11)
+./scripts/build-flatpak.sh
+flatpak run io.github.russellmilliner.DjiMicMiniControl --show
+
+# Option B: Enable the native KDE System Tray Daemon (systemd --user)
+./scripts/install.sh
 ```
 
 ---

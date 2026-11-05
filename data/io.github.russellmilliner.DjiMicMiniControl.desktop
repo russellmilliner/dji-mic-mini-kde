@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=KDE DJI Mic Mini Control
+GenericName=DJI Mic Mini Telemetry & Hardware Control
+Comment=KDE Plasma 6 System Tray, USB Protocol Telemetry, Audio Controls & Battery Monitor for DJI Mic Mini (2ca3:4011)
+Exec=dji-mic-tray --show
+Icon=io.github.russellmilliner.DjiMicMiniControl
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;Utility;Qt;KDE;
+StartupNotify=false
+StartupWMClass=dji-mic-tray
+Keywords=DJI;Mic;Microphone;Battery;USB;Audio;Tray;Control;
