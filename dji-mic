@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""
+dji-mic - Linux CLI management & telemetry tool for DJI Mic Mini.
+Configures settings, monitors battery and audio levels, and manages ALSA/PipeWire audio.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import sys
+import time
+from typing import Any, Dict, Optional
+
+TRAY_SOCKET_PATH = f"/run/user/{os.getuid()}/dji-mic-tray.sock"
+
+
+def query_tray_daemon(cmd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(TRAY_SOCKET_PATH):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(2.5)
+            s.connect(TRAY_SOCKET_PATH)
+            s.sendall((json.dumps(cmd) + "\n").encode("utf-8"))
+            chunks = []
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                chunks.append(data)
+            return json.loads(b"".join(chunks).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def status_from_dict(d: Dict[str, Any]) -> DeviceStatus:
+    from protocol import RxInfo, TxInfo
+
+    st = DeviceStatus(
+        connected=bool(d.get("connected", False)),
+        dialect=str(d.get("dialect", "v1")),
+        gain_dial_db=d.get("gain_dial_db"),
+        nc_enabled=bool(d.get("nc_enabled", False)),
+        settings=dict(d.get("settings") or {}),
+        last_sequence=int(d.get("last_sequence") or 0),
+        heartbeat_count=int(d.get("heartbeat_count") or 0),
+        aux_5b05_hex=str(d.get("aux_5b05_hex") or ""),
+        aux_0474_hex=str(d.get("aux_0474_hex") or ""),
+        last_heartbeat_hex=str(d.get("last_heartbeat_hex") or ""),
+        paired_tx_count_hid=d.get("paired_tx_count_hid"),
+        active_tx_index_hid=d.get("active_tx_index_hid"),
+    )
+    if d.get("rx"):
+        st.rx = RxInfo(**d["rx"])
+    tx_raw = d.get("tx") or [None, None]
+    st.tx = [TxInfo(**t) if t else None for t in tx_raw[:2]]
+    while len(st.tx) < 2:
+        st.tx.append(None)
+    return st
+
+
+def get_live_device_status(duration_s: float = 0.7) -> DeviceStatus:
+    try:
+        with DjiMicDevice() as dev:
+            return dev.sync_status(duration_s)
+    except DjiMicException as e:
+        if "INTERFACE_BUSY" in str(e):
+            resp = query_tray_daemon({"action": "status"})
+            if resp and "duml" in resp:
+                return status_from_dict(resp["duml"])
+        raise
+
+current_dir = os.path.dirname(os.path.realpath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+import audio
+from device import (
+    UDEV_INSTALL_ONELINER,
+    UDEV_RULE_CONTENT,
+    UDEV_RULE_PATH,
+    DjiMicDevice,
+    DjiMicException,
+    DjiMicNotFoundError,
+    DjiMicPermissionError,
+    check_udev_status,
+    get_usb_sysfs_info,
+    install_udev_rule_as_root,
+)
+from protocol import DeviceStatus, gauge_to_percent
+
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_CYAN = "\033[36m"
+C_RED = "\033[31m"
+C_DIM = "\033[2m"
+
+
+def battery_gauge_to_str(gauge: Optional[int], charging: Optional[bool]) -> str:
+    """Convert 3-bit gauge (1 full to 7 empty) into percentage and visual bar."""
+    if gauge is None:
+        return "Unknown"
+    mapping = {
+        0: (100, "[#####]"),
+        1: (100, "[#####]"),
+        2: (85, "[#### ]"),
+        3: (70, "[###  ]"),
+        4: (55, "[##   ]"),
+        5: (40, "[#    ]"),
+        6: (25, "[!    ]"),
+        7: (5, "[!    ]"),
+    }
+    pct, bar = mapping.get(gauge, (None, "[  ?  ]"))
+    if pct is None:
+        return f"Code {gauge} (raw)"
+
+    charge_sym = " ⚡" if charging else ""
+    color = C_GREEN if pct >= 40 else (C_YELLOW if pct >= 20 else C_RED)
+    return f"{color}{pct}% {bar} (code {gauge}/7){charge_sym}{C_RESET}"
+
+
+def audio_level_meter(level: int, width: int = 22) -> str:
+    """Render a visual ASCII VU audio meter bar."""
+    fraction = min(1.0, max(0.0, level / 120.0))
+    filled = int(fraction * width)
+    empty = width - filled
+    bar_str = "█" * filled + "░" * empty
+    if fraction > 0.85:
+        color = C_RED
+    elif fraction > 0.6:
+        color = C_YELLOW
+    else:
+        color = C_GREEN
+    return f"{color}[{bar_str}]{C_RESET} {level:3d}/255"
+
+
+def collect_full_snapshot(st: DeviceStatus) -> Dict[str, Any]:
+    """Assemble complete JSON-serializable snapshot of all known DJI Mic Mini state."""
+    sysfs = get_usb_sysfs_info()
+    udev = check_udev_status(sysfs)
+    alsa_card = audio.get_alsa_card_info()
+    alsa_vol = audio.get_alsa_volume()
+    pw_info = audio.get_pipewire_stream_details()
+
+    return {
+        "usb": sysfs.to_dict(),
+        "udev": udev.to_dict(),
+        "duml": st.to_dict(),
+        "audio": {
+            "alsa_card": alsa_card,
+            "volume": alsa_vol,
+            "pipewire": pw_info,
+        },
+    }
+
+
+def print_status(st: DeviceStatus) -> None:
+    """Print comprehensive status overview of DJI Mic Mini and Linux audio."""
+    sysfs = get_usb_sysfs_info()
+    udev = check_udev_status(sysfs)
+    alsa_card = audio.get_alsa_card_info()
+    alsa_info = audio.get_alsa_volume()
+    pw_info = audio.get_pipewire_stream_details()
+
+    print(f"\n{C_BOLD}DJI Mic Mini — Receiver & USB Telemetry{C_RESET}")
+    print(f"  USB Connection: {C_GREEN}Active ({sysfs.vid_pid}){C_RESET} | Protocol Dialect: {C_CYAN}{st.dialect.upper()}{C_RESET}")
+    print(
+        f"  USB Topology:   Bus {sysfs.bus_num:03d} Dev {sysfs.dev_num:03d} (Port {sysfs.port_path}) | Speed: {sysfs.speed_mbps} | MaxPower: {sysfs.max_power}"
+    )
+    print(
+        f"  USB Descriptor: {sysfs.manufacturer} — {sysfs.product} | USB S/N: {sysfs.usb_serial} | HID: {sysfs.hidraw_node or 'N/A'}"
+    )
+    udev_col = C_GREEN if udev.ready else C_YELLOW
+    print(f"  udev Rule:      {udev_col}{udev.summary}{C_RESET}")
+
+    if st.rx:
+        serial_str = st.rx.serial or "Unknown"
+        fw_str = st.rx.firmware or "Unknown"
+        hw_model = st.rx.hardware_model or "DJI MIC MINI RX"
+        hw_rev = f" | HW Rev {st.rx.hardware_revision}" if st.rx.hardware_revision else ""
+        print(f"  Receiver (RX):  {C_BOLD}{hw_model}{C_RESET} | FW {fw_str}{hw_rev} | S/N {C_CYAN}{serial_str}{C_RESET}")
+        if st.rx.raw_flags0 is not None and st.rx.raw_flags1 is not None:
+            print(
+                f"  RX Raw Flags:   flags0=0x{st.rx.raw_flags0:02x} flags1=0x{st.rx.raw_flags1:02x} plug_free=0x{(st.rx.raw_plug_free_byte or 0):02x} | Seq #{st.last_sequence}"
+            )
+    if st.gain_dial_db is not None:
+        dial_color = C_YELLOW if st.gain_dial_db > 0 else C_CYAN
+        step_info = f" (step {st.rx.gain_step_code}/5)" if (st.rx and st.rx.gain_step_code) else ""
+        print(f"  Receiver Gain:  {dial_color}{st.gain_dial_db:+d} dB{C_RESET}{step_info}")
+
+    print(f"\n{C_BOLD}Wireless Transmitters (TX1 & TX2):{C_RESET}")
+    for idx, tx in enumerate(st.tx):
+        unit_num = idx + 1
+        if tx is None or not tx.connected:
+            print(f"  TX {unit_num}:           {C_RED}Disconnected / Powered Off{C_RESET}")
+            continue
+
+        bat_str = battery_gauge_to_str(tx.battery, tx.charging)
+        tone_str = tx.voice_tone or "standard"
+        serial_part = f"S/N {C_CYAN}{tx.serial}{C_RESET}" if tx.serial else ""
+        fw_part = f"FW {tx.firmware}" if tx.firmware else ""
+        raw_part = (
+            f"state=0x{tx.raw_state_byte:02x} flags=0x{tx.raw_flags_byte:02x}"
+            if (tx.raw_state_byte is not None and tx.raw_flags_byte is not None)
+            else ""
+        )
+        info_parts = [p for p in [fw_part, serial_part, f"Tone: {tone_str}", raw_part] if p]
+        extra_str = " | ".join(info_parts)
+
+        print(f"  TX {unit_num}:           {C_GREEN}Connected{C_RESET} | Battery: {bat_str}")
+        print(f"                  {extra_str}")
+        if tx.level is not None:
+            meter = audio_level_meter(tx.level)
+            print(f"                  Live VU: {meter}")
+
+    print(f"\n{C_BOLD}Hardware Audio & Power Settings:{C_RESET}")
+    nc_mode = st.settings.get("noise-cancel", "basic")
+    nc_power = st.settings.get("noise-cancel-power", "on" if st.nc_enabled else "off")
+    nc_btn = st.settings.get("noise-cancel-button", "on")
+    low_cut = st.settings.get("low-cut", "off")
+    stereo = st.settings.get("stereo", "mono")
+    safety = st.settings.get("safety-track", "off")
+    clip = st.settings.get("clip-limiter", "on")
+    leds = st.settings.get("mic-leds", "on")
+    auto_rx = st.settings.get("auto-off-15m", "on")
+    auto_tx = st.settings.get("tx-auto-off-15m", "on")
+    cam_pwr = st.settings.get("camera-power", "on")
+    plug_free = st.settings.get("plug-free", "off")
+
+    print(
+        f"  Noise Cancel:   Active: {C_GREEN if nc_power == 'on' else C_DIM}{nc_power.upper()}{C_RESET} | Strength: {C_CYAN}{nc_mode.upper()}{C_RESET} | TX Button Toggle: {nc_btn.upper()}"
+    )
+    print(
+        f"  Audio Track:    Mode: {C_CYAN}{stereo.upper()}{C_RESET} | Low-Cut Filter: {low_cut.upper()} | Safety (-6dB): {safety.upper()} | Clip Limiter: {clip.upper()}"
+    )
+    print(
+        f"  Power & LEDs:   TX LEDs: {C_GREEN if leds == 'on' else C_DIM}{leds.upper()}{C_RESET} | Auto-Off (15m): RX={auto_rx.upper()} TX={auto_tx.upper()} | Camera Sync: {cam_pwr.upper()} | Plug-Free: {plug_free.upper()}"
+    )
+
+    print(f"\n{C_BOLD}Linux ALSA & PipeWire Audio Stack:{C_RESET}")
+    if alsa_card.get("card_index") is not None:
+        print(
+            f"  ALSA Card:      Card #{alsa_card['card_index']} [{alsa_card['card_id']}] — {alsa_card['card_name']}"
+        )
+    if alsa_info:
+        pct = alsa_info.get("percent")
+        db = alsa_info.get("db")
+        muted = alsa_info.get("muted")
+        mute_str = f"{C_RED}[MUTED]{C_RESET}" if muted else f"{C_GREEN}[UNMUTED]{C_RESET}"
+        vol_str = f"{pct}% ({db})" if pct is not None else "Unknown"
+        print(f"  Capture Volume: {vol_str} {mute_str}")
+    if pw_info.get("wpctl_id") or pw_info.get("node_name"):
+        print(
+            f"  PipeWire Node:  #{pw_info.get('wpctl_id') or pw_info.get('pactl_id')} ({pw_info.get('node_name')})"
+        )
+        print(
+            f"  Stream Format:  {pw_info.get('sample_spec') or 's24le 2ch 48000Hz'} | State: {pw_info.get('stream_state') or 'UNKNOWN'}"
+        )
+    print()
+
+
+def live_monitor() -> None:
+    """Live updating terminal screen."""
+    print("Connecting to DJI Mic Mini for live monitoring (press Ctrl+C to exit)...")
+    try:
+        with DjiMicDevice() as dev:
+            dev.sync_status(0.4)
+            sys.stdout.write("\033[2J")
+            while True:
+                dev.poll_frames(timeout_ms=80)
+                sys.stdout.write("\033[H")
+                print_status(dev.status)
+                time.sleep(0.08)
+    except KeyboardInterrupt:
+        print("\nExiting monitor.")
+
+
+def handle_set(setting_name: str, value: str, tx_unit: Optional[int] = None) -> None:
+    norm_name = setting_name.lower().replace("_", "-")
+    aliases = {
+        "nc": "noise-cancel",
+        "noise-cancelling": "noise-cancel-power",
+        "nc-power": "noise-cancel-power",
+        "nc-btn": "noise-cancel-button",
+        "nc-button": "noise-cancel-button",
+        "lowcut": "low-cut",
+        "channels": "stereo",
+        "channel": "stereo",
+        "clip": "clip-limiter",
+        "clipping": "clip-limiter",
+        "safety": "safety-track",
+        "led": "mic-leds",
+        "leds": "mic-leds",
+        "tone": "voice-tone",
+        "auto-off-rx": "auto-off-15m",
+        "auto-off-tx": "tx-auto-off-15m",
+    }
+    norm_name = aliases.get(norm_name, norm_name)
+
+    if norm_name == "stereo" and value in ("on", "true", "1"):
+        value = "stereo"
+    elif norm_name == "stereo" and value in ("off", "false", "0"):
+        value = "mono"
+
+    try:
+        with DjiMicDevice() as dev:
+            dev.sync_status(0.4)
+            print(f"Applying: {norm_name} -> {value}...")
+            ok = dev.set_setting(norm_name, value, tx_unit=tx_unit)
+            if ok:
+                print(f"{C_GREEN}✓ Setting '{norm_name}' updated to '{value}'.{C_RESET}")
+            else:
+                time.sleep(0.2)
+                dev.poll_frames()
+                current = dev.status.settings.get(norm_name)
+                if current == value:
+                    print(f"{C_GREEN}✓ Verified on device: {norm_name} = {current}{C_RESET}")
+                else:
+                    print(f"{C_YELLOW}Command sent (current reported value: {current}).{C_RESET}")
+    except DjiMicException as e:
+        if "INTERFACE_BUSY" in str(e):
+            print(f"Applying via dji-mic-tray: {norm_name} -> {value}...")
+            resp = query_tray_daemon(
+                {"action": "set", "setting": norm_name, "value": value, "tx": tx_unit}
+            )
+            if resp and resp.get("ok"):
+                print(f"{C_GREEN}✓ Setting '{norm_name}' updated to '{value}'.{C_RESET}")
+                return
+            raise DjiMicException((resp or {}).get("error", "Failed to apply setting via tray"))
+        raise
+
+
+def handle_volume(vol_str: Optional[str]) -> None:
+    if not vol_str:
+        vol = audio.get_alsa_volume()
+        if vol:
+            print(
+                f"Capture volume: {vol.get('percent')}% ({vol.get('db')}) | Muted: {vol.get('muted')}"
+            )
+        else:
+            print("Could not query capture volume.")
+        return
+
+    if not vol_str.endswith("%") and vol_str.isdigit():
+        vol_str += "%"
+
+    if audio.set_alsa_volume(vol_str):
+        print(f"{C_GREEN}✓ Volume set to {vol_str}{C_RESET}")
+    else:
+        print(f"{C_RED}Failed to set capture volume.{C_RESET}")
+
+
+def handle_mute(mute: bool) -> None:
+    if audio.set_alsa_mute(mute):
+        state_str = "MUTED" if mute else "UNMUTED"
+        print(f"{C_GREEN}✓ Microphone {state_str}{C_RESET}")
+    else:
+        print(f"{C_RED}Failed to update mute state.{C_RESET}")
+
+
+def handle_udev(install: bool, want_json: bool = False) -> None:
+    if install:
+        install_udev_rule_as_root()
+        udev = check_udev_status()
+        if want_json:
+            print(json.dumps(udev.to_dict(), indent=2))
+        else:
+            print(f"{C_GREEN}✓ Installed {UDEV_RULE_PATH} and reloaded udev rules.{C_RESET}")
+            print(f"  Status: {udev.summary}")
+        return
+
+    udev = check_udev_status()
+    if want_json:
+        print(json.dumps(udev.to_dict(), indent=2))
+        return
+
+    print(f"\n{C_BOLD}DJI Mic Mini — udev Rule & USB Permission Check{C_RESET}")
+    print(f"  Rule File:      {udev.rule_path} ({'Installed' if udev.rule_installed else 'Missing'})")
+    print(f"  Rule Valid:     {'Yes' if udev.rule_content_valid else 'No'}")
+    print(f"  USBFS Node:     {udev.usbfs_node or 'Not plugged in'} (Writable: {'Yes' if udev.usbfs_writable else 'No'})")
+    print(f"  HIDRaw Node:    {udev.hidraw_node or 'Not plugged in'} (Writable: {'Yes' if udev.hidraw_writable else 'No'})")
+    col = C_GREEN if udev.ready else C_YELLOW
+    print(f"  Overall Status: {col}{udev.summary}{C_RESET}")
+    if not udev.ready:
+        print(f"\n{C_YELLOW}To install or repair the udev rule, run:{C_RESET}")
+        print(f"  sudo dji-mic udev --install\nor:\n  {UDEV_INSTALL_ONELINER}\n")
+    else:
+        print()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="DJI Mic Mini Linux management & telemetry CLI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--json", action="store_true", help="Output status in JSON format")
+    subparsers = parser.add_subparsers(dest="command")
+
+    p_status = subparsers.add_parser("status", help="Show full device status")
+    p_status.add_argument("--json", action="store_true", help="Output status in JSON format")
+
+    subparsers.add_parser("monitor", help="Live audio and battery terminal monitor")
+
+    p_get = subparsers.add_parser("get", help="Get setting value")
+    p_get.add_argument("setting", nargs="?", help="Setting name")
+
+    p_set = subparsers.add_parser("set", help="Change a hardware setting")
+    p_set.add_argument("setting", help="Setting name (e.g. nc, leds, stereo, low-cut)")
+    p_set.add_argument("value", nargs="?", default="on", help="Value")
+    p_set.add_argument("--tx", type=int, choices=[1, 2], help="Target transmitter unit (1 or 2)")
+
+    p_nc = subparsers.add_parser("nc", help="Set noise cancel (basic / strong / on / off)")
+    p_nc.add_argument("mode", choices=["basic", "strong", "on", "off"], help="Noise cancel mode")
+
+    p_leds = subparsers.add_parser("leds", help="Transmitter LEDs (on / off)")
+    p_leds.add_argument("state", choices=["on", "off"], help="LED state")
+
+    p_lowcut = subparsers.add_parser("lowcut", help="Low-cut filter (on / off)")
+    p_lowcut.add_argument("state", choices=["on", "off"], help="Low-cut state")
+
+    p_stereo = subparsers.add_parser("stereo", help="Stereo audio tracking (on / off)")
+    p_stereo.add_argument("state", nargs="?", default="on", choices=["on", "off"], help="Stereo state")
+
+    p_vol = subparsers.add_parser("volume", help="Get or set capture volume")
+    p_vol.add_argument("level", nargs="?", help="Volume percentage (e.g. 80%%)")
+
+    subparsers.add_parser("mute", help="Mute microphone")
+    subparsers.add_parser("unmute", help="Unmute microphone")
+
+    p_udev = subparsers.add_parser("udev", help="Check or install udev rules for non-root USB access")
+    p_udev.add_argument("--check", action="store_true", help="Check udev rule and USB permissions")
+    p_udev.add_argument("--install", action="store_true", help="Install rule to /etc/udev/rules.d/ (requires sudo)")
+    p_udev.add_argument("--json", action="store_true", help="Output udev check in JSON format")
+
+    args = parser.parse_args()
+    want_json = getattr(args, "json", False)
+
+    try:
+        if args.command == "udev":
+            handle_udev(install=bool(getattr(args, "install", False)), want_json=want_json)
+            return
+        if args.command in (None, "status"):
+            st = get_live_device_status(0.7)
+            if want_json:
+                print(json.dumps(collect_full_snapshot(st), indent=2))
+            else:
+                print_status(st)
+        elif args.command == "monitor":
+            live_monitor()
+        elif args.command == "get":
+            st = get_live_device_status(0.7)
+            if args.setting:
+                norm_name = args.setting.lower().replace("_", "-")
+                print(f"{norm_name}: {st.settings.get(norm_name, 'unknown')}")
+            else:
+                print_status(st)
+        elif args.command == "set":
+            handle_set(args.setting, args.value, tx_unit=args.tx)
+        elif args.command == "nc":
+            if args.mode in ("on", "off"):
+                handle_set("noise-cancel-power", args.mode)
+            else:
+                handle_set("noise-cancel", args.mode)
+        elif args.command == "leds":
+            handle_set("mic-leds", args.state)
+        elif args.command == "lowcut":
+            handle_set("low-cut", args.state)
+        elif args.command == "stereo":
+            handle_set("stereo", "stereo" if args.state == "on" else "mono")
+        elif args.command == "volume":
+            handle_volume(args.level)
+        elif args.command == "mute":
+            handle_mute(True)
+        elif args.command == "unmute":
+            handle_mute(False)
+
+    except (DjiMicPermissionError, DjiMicNotFoundError, DjiMicException) as e:
+        if want_json:
+            print(
+                json.dumps(
+                    {
+                        "error": str(e),
+                        "usb": get_usb_sysfs_info().to_dict(),
+                        "duml": {"connected": False},
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(f"\n{C_RED}{C_BOLD}DJI Mic Mini Error:{C_RESET} {e}\n", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

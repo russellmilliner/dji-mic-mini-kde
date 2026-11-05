@@ -1,0 +1,15 @@
+[Unit]
+Description=KDE DJI Mic Mini Control — System Tray Telemetry, Hardware Controller & Disconnection Alert Monitor
+After=graphical-session.target pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dji-mic-tray --minimized
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=QT_QUICK_CONTROLS_STYLE=org.kde.desktop
+
+[Install]
+WantedBy=default.target
