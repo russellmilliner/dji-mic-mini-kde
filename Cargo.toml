@@ -1,0 +1,24 @@
+[package]
+name = "dji-mic-mini-kde"
+version = "0.2.0"
+edition = "2021"
+authors = ["Russell Milliner <https://github.com/russellmilliner>"]
+description = "KDE Plasma 6 System Tray, Telemetry Studio, and DUML v1/v2 USB Controller for DJI Mic Mini (Written in Rust)"
+license = "MIT"
+
+[[bin]]
+name = "dji-mic"
+path = "src/bin/dji-mic.rs"
+
+[[bin]]
+name = "dji-mic-tray"
+path = "src/bin/dji-mic-tray.rs"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+pkg-config = "0.3"
