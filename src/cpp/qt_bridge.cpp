@@ -41,6 +41,11 @@ extern "C" {
     void rust_apply_hardware_setting(const char* setting, const char* value);
     void rust_set_system_mic_mute(bool muted);
     void rust_set_system_mic_volume(int pct);
+    void rust_learn_noise_profile();
+    void rust_reset_noise_profile();
+    void rust_set_ai_nc_mode(const char* mode);
+    void rust_set_ai_nc_strength(int pct);
+    void rust_set_ai_nc_virtual_mic(bool enabled);
     void rust_notify_json_copied();
     void rust_set_alert_on_rx_disconnect(bool enabled);
     void rust_set_alert_on_tx_disconnect(bool enabled);
@@ -310,6 +315,24 @@ QString DjiMicController::settingPlugFree() const { return rStr("settingPlugFree
 
 int DjiMicController::alsaVolumePct() const { return rust_get_int("alsaVolumePct"); }
 bool DjiMicController::alsaMuted() const { return rust_get_bool("alsaMuted"); }
+QString DjiMicController::aiNcMode() const { return rStr("aiNcMode"); }
+int DjiMicController::aiNcStrengthPct() const { return rust_get_int("aiNcStrengthPct"); }
+bool DjiMicController::aiNcVirtualMic() const { return rust_get_bool("aiNcVirtualMic"); }
+bool DjiMicController::aiNcVirtualMicActive() const { return rust_get_bool("aiNcVirtualMicActive"); }
+bool DjiMicController::noiseLearnActive() const { return rust_get_bool("noiseLearnActive"); }
+int DjiMicController::noiseLearnProgressPct() const { return rust_get_int("noiseLearnProgressPct"); }
+QString DjiMicController::noiseLearnStatus() const { return rStr("noiseLearnStatus"); }
+bool DjiMicController::noiseProfileLearned() const { return rust_get_bool("noiseProfileLearned"); }
+QString DjiMicController::noiseProfileLearnedAt() const { return rStr("noiseProfileLearnedAt"); }
+QString DjiMicController::noiseProfileSource() const { return rStr("noiseProfileSource"); }
+QString DjiMicController::noiseSignature() const { return rStr("noiseSignature"); }
+QString DjiMicController::noiseFloorSummary() const { return rStr("noiseFloorSummary"); }
+QString DjiMicController::learnedFilterSummary() const { return rStr("learnedFilterSummary"); }
+QString DjiMicController::bandLowRumbleStr() const { return rStr("bandLowRumbleStr"); }
+QString DjiMicController::bandFanHumStr() const { return rStr("bandFanHumStr"); }
+QString DjiMicController::bandMidRoomStr() const { return rStr("bandMidRoomStr"); }
+QString DjiMicController::bandHighHissStr() const { return rStr("bandHighHissStr"); }
+int DjiMicController::adaptivePasses() const { return rust_get_int("adaptivePasses"); }
 QString DjiMicController::linuxAudioSummary() const { return rStr("linuxAudioSummary"); }
 QString DjiMicController::usbVidPid() const { return rStr("usbVidPid"); }
 QString DjiMicController::usbManufacturerProduct() const { return rStr("usbManufacturerProduct"); }
@@ -354,6 +377,11 @@ void DjiMicController::applyHardwareSetting(const QString& setting, const QStrin
 }
 void DjiMicController::setSystemMicMute(bool muted) { rust_set_system_mic_mute(muted); }
 void DjiMicController::setSystemMicVolume(int pct) { rust_set_system_mic_volume(pct); }
+void DjiMicController::learnNoiseProfile() { rust_learn_noise_profile(); }
+void DjiMicController::resetNoiseProfile() { rust_reset_noise_profile(); }
+void DjiMicController::setAiNcMode(const QString& mode) { rust_set_ai_nc_mode(mode.toUtf8().constData()); }
+void DjiMicController::setAiNcStrength(int pct) { rust_set_ai_nc_strength(pct); }
+void DjiMicController::setAiNcVirtualMic(bool enabled) { rust_set_ai_nc_virtual_mic(enabled); }
 void DjiMicController::copyJsonSnapshotToClipboard() {
     if (QClipboard* cb = QGuiApplication::clipboard()) {
         cb->setText(rStr("fullSnapshotJson"));

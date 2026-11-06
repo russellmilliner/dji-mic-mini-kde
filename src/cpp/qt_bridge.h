@@ -83,6 +83,24 @@ class DjiMicController : public QObject {
 
     Q_PROPERTY(int alsaVolumePct READ alsaVolumePct NOTIFY stateChanged)
     Q_PROPERTY(bool alsaMuted READ alsaMuted NOTIFY stateChanged)
+    Q_PROPERTY(QString aiNcMode READ aiNcMode NOTIFY stateChanged)
+    Q_PROPERTY(int aiNcStrengthPct READ aiNcStrengthPct NOTIFY stateChanged)
+    Q_PROPERTY(bool aiNcVirtualMic READ aiNcVirtualMic NOTIFY stateChanged)
+    Q_PROPERTY(bool aiNcVirtualMicActive READ aiNcVirtualMicActive NOTIFY stateChanged)
+    Q_PROPERTY(bool noiseLearnActive READ noiseLearnActive NOTIFY stateChanged)
+    Q_PROPERTY(int noiseLearnProgressPct READ noiseLearnProgressPct NOTIFY stateChanged)
+    Q_PROPERTY(QString noiseLearnStatus READ noiseLearnStatus NOTIFY stateChanged)
+    Q_PROPERTY(bool noiseProfileLearned READ noiseProfileLearned NOTIFY stateChanged)
+    Q_PROPERTY(QString noiseProfileLearnedAt READ noiseProfileLearnedAt NOTIFY stateChanged)
+    Q_PROPERTY(QString noiseProfileSource READ noiseProfileSource NOTIFY stateChanged)
+    Q_PROPERTY(QString noiseSignature READ noiseSignature NOTIFY stateChanged)
+    Q_PROPERTY(QString noiseFloorSummary READ noiseFloorSummary NOTIFY stateChanged)
+    Q_PROPERTY(QString learnedFilterSummary READ learnedFilterSummary NOTIFY stateChanged)
+    Q_PROPERTY(QString bandLowRumbleStr READ bandLowRumbleStr NOTIFY stateChanged)
+    Q_PROPERTY(QString bandFanHumStr READ bandFanHumStr NOTIFY stateChanged)
+    Q_PROPERTY(QString bandMidRoomStr READ bandMidRoomStr NOTIFY stateChanged)
+    Q_PROPERTY(QString bandHighHissStr READ bandHighHissStr NOTIFY stateChanged)
+    Q_PROPERTY(int adaptivePasses READ adaptivePasses NOTIFY stateChanged)
     Q_PROPERTY(QString linuxAudioSummary READ linuxAudioSummary NOTIFY stateChanged)
     Q_PROPERTY(QString usbVidPid READ usbVidPid NOTIFY stateChanged)
     Q_PROPERTY(QString usbManufacturerProduct READ usbManufacturerProduct NOTIFY stateChanged)
@@ -178,6 +196,24 @@ public:
 
     int alsaVolumePct() const;
     bool alsaMuted() const;
+    QString aiNcMode() const;
+    int aiNcStrengthPct() const;
+    bool aiNcVirtualMic() const;
+    bool aiNcVirtualMicActive() const;
+    bool noiseLearnActive() const;
+    int noiseLearnProgressPct() const;
+    QString noiseLearnStatus() const;
+    bool noiseProfileLearned() const;
+    QString noiseProfileLearnedAt() const;
+    QString noiseProfileSource() const;
+    QString noiseSignature() const;
+    QString noiseFloorSummary() const;
+    QString learnedFilterSummary() const;
+    QString bandLowRumbleStr() const;
+    QString bandFanHumStr() const;
+    QString bandMidRoomStr() const;
+    QString bandHighHissStr() const;
+    int adaptivePasses() const;
     QString linuxAudioSummary() const;
     QString usbVidPid() const;
     QString usbManufacturerProduct() const;
@@ -209,6 +245,11 @@ public:
     Q_INVOKABLE void applyHardwareSetting(const QString& setting, const QString& value);
     Q_INVOKABLE void setSystemMicMute(bool muted);
     Q_INVOKABLE void setSystemMicVolume(int pct);
+    Q_INVOKABLE void learnNoiseProfile();
+    Q_INVOKABLE void resetNoiseProfile();
+    Q_INVOKABLE void setAiNcMode(const QString& mode);
+    Q_INVOKABLE void setAiNcStrength(int pct);
+    Q_INVOKABLE void setAiNcVirtualMic(bool enabled);
     Q_INVOKABLE void copyJsonSnapshotToClipboard();
     Q_INVOKABLE void setAlertOnRxDisconnect(bool enabled);
     Q_INVOKABLE void setAlertOnTxDisconnect(bool enabled);

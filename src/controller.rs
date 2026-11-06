@@ -1,6 +1,8 @@
 use crate::audio::{
-    get_alsa_card_info, get_alsa_volume, get_pipewire_stream_details, set_alsa_mute,
-    set_alsa_volume, AlsaCardInfo, AlsaVolumeInfo, PipewireStreamInfo,
+    get_alsa_card_info, get_alsa_volume, get_noise_learn_live_state, get_pipewire_stream_details,
+    maybe_run_adaptive_micro_learn, recompute_profile_for_strength, reset_learned_noise_profile,
+    set_alsa_mute, set_alsa_volume, sync_pipewire_ai_virtual_mic, trigger_noise_learning_async,
+    AlsaCardInfo, AlsaVolumeInfo, PipewireStreamInfo,
 };
 use crate::device::{
     check_udev_status, get_usb_sysfs_info, query_hid_service_info, DjiMicDevice, UdevStatus,
@@ -30,6 +32,20 @@ pub struct AppConfig {
     pub alert_on_tx_disconnect: bool,
     pub alert_on_low_battery: bool,
     pub low_battery_threshold_pct: i32,
+    #[serde(default = "default_ai_nc_mode")]
+    pub ai_nc_mode: String,
+    #[serde(default = "default_ai_nc_strength")]
+    pub ai_nc_strength_pct: i32,
+    #[serde(default)]
+    pub ai_nc_virtual_mic: bool,
+}
+
+fn default_ai_nc_mode() -> String {
+    "learned_ai".to_string()
+}
+
+fn default_ai_nc_strength() -> i32 {
+    80
 }
 
 impl Default for AppConfig {
@@ -41,6 +57,9 @@ impl Default for AppConfig {
             alert_on_tx_disconnect: true,
             alert_on_low_battery: true,
             low_battery_threshold_pct: 25,
+            ai_nc_mode: "learned_ai".to_string(),
+            ai_nc_strength_pct: 80,
+            ai_nc_virtual_mic: false,
         }
     }
 }
@@ -208,6 +227,7 @@ fn send_desktop_popup(st: &mut BackendState, title: &str, body: &str, urgency: &
 }
 
 pub fn build_full_snapshot_from(st: &BackendState) -> serde_json::Value {
+    let nl = get_noise_learn_live_state();
     json!({
         "usb": st.usb_info,
         "udev": st.udev_status,
@@ -216,6 +236,16 @@ pub fn build_full_snapshot_from(st: &BackendState) -> serde_json::Value {
             "alsa_card": st.alsa_card,
             "volume": st.alsa_vol,
             "pipewire": st.pw_info,
+            "ai_nc_mode": st.config.ai_nc_mode,
+            "ai_nc_strength_pct": st.config.ai_nc_strength_pct,
+            "ai_nc_virtual_mic": st.config.ai_nc_virtual_mic,
+            "ai_nc_virtual_mic_active": nl.virtual_mic_active,
+            "noise_learning": {
+                "active": nl.learning_active,
+                "progress_pct": nl.progress_pct,
+                "status": nl.status_text,
+                "profile": nl.profile,
+            }
         }
     })
 }
@@ -384,6 +414,12 @@ pub fn poll_tick_internal(force_slow: bool) {
             st.alsa_vol = v;
         }
         st.pw_info = pw_info;
+        if st.config.ai_nc_mode == "adaptive" {
+            maybe_run_adaptive_micro_learn(
+                st.config.ai_nc_strength_pct,
+                st.config.ai_nc_virtual_mic,
+            );
+        }
     }
 
     let (present, hidraw_node) = {
@@ -766,6 +802,10 @@ pub extern "C" fn rust_get_bool(key_ptr: *const c_char) -> bool {
             .map(|t| t.charging)
             .unwrap_or(false),
         "alsaMuted" => st.alsa_vol.muted,
+        "aiNcVirtualMic" => st.config.ai_nc_virtual_mic,
+        "aiNcVirtualMicActive" => get_noise_learn_live_state().virtual_mic_active,
+        "noiseLearnActive" => get_noise_learn_live_state().learning_active,
+        "noiseProfileLearned" => get_noise_learn_live_state().profile.learned,
         _ => false,
     }
 }
@@ -831,6 +871,12 @@ pub extern "C" fn rust_get_int(key_ptr: *const c_char) -> i32 {
             .and_then(|t| t.level)
             .unwrap_or(0),
         "alsaVolumePct" => st.alsa_vol.percent,
+        "aiNcStrengthPct" => st.config.ai_nc_strength_pct,
+        "noiseLearnProgressPct" => get_noise_learn_live_state().progress_pct,
+        "dominantHumHz" => get_noise_learn_live_state().profile.dominant_hum_hz,
+        "learnedVadThresholdPct" => get_noise_learn_live_state().profile.learned_vad_threshold_pct,
+        "learnedHighpassHz" => get_noise_learn_live_state().profile.learned_highpass_hz,
+        "adaptivePasses" => get_noise_learn_live_state().profile.adaptive_passes as i32,
         "minBatteryPct" => {
             let mut min_b: Option<i32> = None;
             for t in st.status.tx.iter().flatten() {
@@ -1345,6 +1391,34 @@ pub extern "C" fn rust_get_str(key_ptr: *const c_char) -> *mut c_char {
             }
         }
         "udevInstallOneliner" => UDEV_INSTALL_ONELINER.to_string(),
+        "aiNcMode" => st.config.ai_nc_mode.clone(),
+        "noiseLearnStatus" => get_noise_learn_live_state().status_text,
+        "noiseProfileLearnedAt" => get_noise_learn_live_state().profile.learned_at,
+        "noiseProfileSource" => get_noise_learn_live_state().profile.capture_source,
+        "noiseSignature" => get_noise_learn_live_state().profile.noise_signature,
+        "noiseFloorSummary" => {
+            let p = get_noise_learn_live_state().profile;
+            format!(
+                "Raw {:+.1} dBFS  →  RNNoise {:+.1} dBFS  (-{:.1} dB Neural Suppression)",
+                p.noise_floor_dbfs, p.denoised_floor_dbfs, p.rnnoise_attenuation_db
+            )
+        }
+        "learnedFilterSummary" => {
+            let p = get_noise_learn_live_state().profile;
+            format!(
+                "HP: {} Hz • Hum Notch: {} Hz ({:+.1} dB) • VAD Gate: {}% • Rec HW: NC={}, Low-Cut={}",
+                p.learned_highpass_hz,
+                p.learned_notch_hz,
+                p.learned_notch_db,
+                p.learned_vad_threshold_pct,
+                p.recommended_hw_nc_mode.to_uppercase(),
+                p.recommended_hw_low_cut.to_uppercase()
+            )
+        }
+        "bandLowRumbleStr" => format!("{:+.1}", get_noise_learn_live_state().profile.band_low_rumble_db),
+        "bandFanHumStr" => format!("{:+.1}", get_noise_learn_live_state().profile.band_fan_hum_db),
+        "bandMidRoomStr" => format!("{:+.1}", get_noise_learn_live_state().profile.band_mid_room_db),
+        "bandHighHissStr" => format!("{:+.1}", get_noise_learn_live_state().profile.band_high_hiss_db),
         "fullSnapshotJson" => {
             serde_json::to_string_pretty(&build_full_snapshot_from(&st)).unwrap_or_default()
         }
@@ -1463,6 +1537,172 @@ pub extern "C" fn rust_set_system_mic_volume(pct: i32) {
     let clamped = pct.clamp(0, 100);
     set_alsa_volume(&format!("{}%", clamped));
     poll_tick_internal(true);
+}
+
+#[no_mangle]
+pub extern "C" fn rust_learn_noise_profile() {
+    let (ui_test, strength, vmic, ai_mode) = {
+        let st = get_state().lock().unwrap();
+        (
+            st.ui_test_mode,
+            st.config.ai_nc_strength_pct,
+            st.config.ai_nc_virtual_mic,
+            st.config.ai_nc_mode.clone(),
+        )
+    };
+    if ui_test {
+        let mut st = get_state().lock().unwrap();
+        st.last_action_message = "Simulated AI Room Noise Learning (UI Test)".to_string();
+        drop(st);
+        emit_state_changed();
+        return;
+    }
+    let started = trigger_noise_learning_async(strength, vmic, move |prof| {
+        if ai_mode == "learned_ai" || ai_mode == "adaptive" {
+            let _ = apply_setting_sync("noise-cancel", &prof.recommended_hw_nc_mode, None);
+            let _ = apply_setting_sync("low-cut", &prof.recommended_hw_low_cut, None);
+        }
+        {
+            let mut st = get_state().lock().unwrap();
+            st.last_action_message = format!(
+                "Learned Room Profile: {} -> Applied HW NC={} & Low-Cut={}",
+                prof.noise_signature,
+                prof.recommended_hw_nc_mode.to_uppercase(),
+                prof.recommended_hw_low_cut.to_uppercase()
+            );
+            log_event(
+                &mut st,
+                &format!(
+                    "AI Room Noise Learned: {} (RNNoise -{:.1}dB, HW NC={}, Low-Cut={})",
+                    prof.noise_signature,
+                    prof.rnnoise_attenuation_db,
+                    prof.recommended_hw_nc_mode,
+                    prof.recommended_hw_low_cut
+                ),
+            );
+        }
+        emit_state_changed();
+    });
+    if started {
+        let mut st = get_state().lock().unwrap();
+        st.last_action_message =
+            "Sampling room acoustics (3s) via RNNoise neural network & spectral analyzer..."
+                .to_string();
+        drop(st);
+        emit_state_changed();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_reset_noise_profile() {
+    let _ = reset_learned_noise_profile();
+    {
+        let mut st = get_state().lock().unwrap();
+        st.last_action_message =
+            "Reset learned AI room noise profile to baseline defaults.".to_string();
+    }
+    emit_state_changed();
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_ai_nc_mode(mode_ptr: *const c_char) {
+    let raw = c_str_to_rust(mode_ptr);
+    let valid = match raw.as_str() {
+        "off" | "hardware" | "learned_ai" | "adaptive" => raw,
+        _ => "learned_ai".to_string(),
+    };
+    let (ui_test, strength, vmic) = {
+        let mut st = get_state().lock().unwrap();
+        st.config.ai_nc_mode = valid.clone();
+        save_config(&st);
+        (
+            st.ui_test_mode,
+            st.config.ai_nc_strength_pct,
+            st.config.ai_nc_virtual_mic,
+        )
+    };
+    if !ui_test {
+        if valid == "off" && vmic {
+            let _ = sync_pipewire_ai_virtual_mic(false, false);
+        } else if (valid == "learned_ai" || valid == "adaptive") && vmic {
+            let _ = sync_pipewire_ai_virtual_mic(true, false);
+        }
+        if valid == "learned_ai" || valid == "adaptive" {
+            let prof = get_noise_learn_live_state().profile;
+            if prof.learned {
+                let _ = apply_setting_sync("noise-cancel", &prof.recommended_hw_nc_mode, None);
+                let _ = apply_setting_sync("low-cut", &prof.recommended_hw_low_cut, None);
+            }
+        }
+        if valid == "adaptive" {
+            maybe_run_adaptive_micro_learn(strength, vmic);
+        }
+    }
+    {
+        let mut st = get_state().lock().unwrap();
+        st.last_action_message = format!("AI Noise Cancellation Mode -> {}", valid.to_uppercase());
+    }
+    emit_config_changed();
+    emit_state_changed();
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_ai_nc_strength(pct: i32) {
+    let clamped = pct.clamp(0, 100);
+    let (ui_test, vmic, mode) = {
+        let mut st = get_state().lock().unwrap();
+        st.config.ai_nc_strength_pct = clamped;
+        save_config(&st);
+        (
+            st.ui_test_mode,
+            st.config.ai_nc_virtual_mic,
+            st.config.ai_nc_mode.clone(),
+        )
+    };
+    if !ui_test {
+        recompute_profile_for_strength(clamped, vmic);
+        if mode == "learned_ai" || mode == "adaptive" {
+            let prof = get_noise_learn_live_state().profile;
+            let _ = apply_setting_sync("noise-cancel", &prof.recommended_hw_nc_mode, None);
+        }
+    }
+    {
+        let mut st = get_state().lock().unwrap();
+        let prof = get_noise_learn_live_state().profile;
+        st.last_action_message = format!(
+            "AI Suppression Strength -> {}% (HP {}Hz, VAD {}%, Rec HW NC={})",
+            clamped,
+            prof.learned_highpass_hz,
+            prof.learned_vad_threshold_pct,
+            prof.recommended_hw_nc_mode.to_uppercase()
+        );
+    }
+    emit_config_changed();
+    emit_state_changed();
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_ai_nc_virtual_mic(enabled: bool) {
+    let ui_test = {
+        let mut st = get_state().lock().unwrap();
+        st.config.ai_nc_virtual_mic = enabled;
+        save_config(&st);
+        st.ui_test_mode
+    };
+    let msg = if !ui_test {
+        sync_pipewire_ai_virtual_mic(enabled, false).1
+    } else {
+        format!(
+            "PipeWire AI Virtual Mic -> {}",
+            if enabled { "ON" } else { "OFF" }
+        )
+    };
+    {
+        let mut st = get_state().lock().unwrap();
+        st.last_action_message = msg;
+    }
+    emit_config_changed();
+    emit_state_changed();
 }
 
 #[no_mangle]

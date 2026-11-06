@@ -958,6 +958,246 @@ Kirigami.ApplicationWindow {
                                 }
                             }
                         }
+
+                        // AI Noise Cancellation & Ambient Room Noise Learning Card
+                        InfoCard {
+                            cardTitle: "AI Noise Cancellation & Ambient Room Noise Learning"
+                            cardSubtitle: controller
+                                          ? ("RNNoise Neural GRU + 4-Band Spectral & Tonal Hum Profiler • Auto-Calibrates TX/RX DSP • " + controller.noiseProfileSource)
+                                          : "RNNoise Neural GRU + 4-Band Spectral & Tonal Hum Profiler"
+                            rightBadgeText: {
+                                if (!controller) return "AI READY"
+                                if (controller.noiseLearnActive) return "LEARNING " + controller.noiseLearnProgressPct + "%"
+                                if (controller.aiNcMode === "off") return "AI NC OFF"
+                                if (controller.aiNcMode === "adaptive") return "AUTO-LEARN (#" + controller.adaptivePasses + ")"
+                                return controller.noiseProfileLearned ? "PROFILE LEARNED" : "BASELINE AI"
+                            }
+                            rightBadgeColor: {
+                                if (!controller) return root.accentCol
+                                if (controller.noiseLearnActive) return root.warnCol
+                                if (controller.aiNcMode === "off") return root.errCol
+                                return controller.noiseProfileLearned ? root.okCol : root.accentCol
+                            }
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: root.width >= 960 ? 2 : 1
+                                columnSpacing: 12
+                                rowSpacing: 8
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    QQC2.Label {
+                                        Layout.preferredWidth: Math.round(145 * root.zoomScale)
+                                        text: "AI Denoise Mode:"
+                                        color: root.mutedFg
+                                        font.pointSize: root.smallPt
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    QQC2.ComboBox {
+                                        Layout.fillWidth: true
+                                        font.pointSize: root.smallPt
+                                        model: [
+                                            "Off (Manual Hardware DSP Only)",
+                                            "Hardware DSP Only (Basic / Strong)",
+                                            "AI Learned Profile + Auto-Tune TX/RX DSP",
+                                            "Continuous Adaptive Auto-Learn + AI Denoise"
+                                        ]
+                                        currentIndex: {
+                                            var m = controller ? controller.aiNcMode : "learned_ai"
+                                            var keys = ["off", "hardware", "learned_ai", "adaptive"]
+                                            var idx = keys.indexOf(m)
+                                            return idx >= 0 ? idx : 2
+                                        }
+                                        onActivated: function(idx) {
+                                            var keys = ["off", "hardware", "learned_ai", "adaptive"]
+                                            if (controller) controller.setAiNcMode(keys[idx])
+                                        }
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    QQC2.Label {
+                                        Layout.preferredWidth: Math.round(145 * root.zoomScale)
+                                        text: "Suppression Strength:"
+                                        color: root.mutedFg
+                                        font.pointSize: root.smallPt
+                                        wrapMode: Text.Wrap
+                                    }
+
+                                    QQC2.Slider {
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 100
+                                        stepSize: 5
+                                        value: controller ? controller.aiNcStrengthPct : 80
+                                        onMoved: {
+                                            if (controller) controller.setAiNcStrength(Math.round(value))
+                                        }
+                                    }
+
+                                    QQC2.Label {
+                                        Layout.preferredWidth: Math.round(48 * root.zoomScale)
+                                        horizontalAlignment: Text.AlignRight
+                                        text: (controller ? controller.aiNcStrengthPct : 80) + "%"
+                                        color: root.fgColor
+                                        font.pointSize: root.smallPt
+                                        font.bold: true
+                                    }
+                                }
+                            }
+
+                            QQC2.Switch {
+                                Layout.fillWidth: true
+                                text: controller && controller.aiNcVirtualMicActive
+                                      ? "PipeWire AI Noise-Cancelled Virtual Mic ('dji_ai_denoise_mic' — ACTIVE in PipeWire)"
+                                      : "Enable PipeWire AI Noise-Cancelled Virtual Microphone ('dji_ai_denoise_mic' for OBS / Zoom / Teams)"
+                                font.pointSize: root.smallPt
+                                checked: controller ? controller.aiNcVirtualMic : false
+                                onToggled: {
+                                    if (controller) controller.setAiNcVirtualMic(checked)
+                                }
+                            }
+
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                QQC2.Button {
+                                    text: (controller && controller.noiseLearnActive)
+                                          ? ("Sampling Room Acoustics (" + controller.noiseLearnProgressPct + "%)...")
+                                          : "🎙️ Learn Room Noise & Auto-Calibrate TX/RX (3s Sample)"
+                                    icon.name: "audio-input-microphone"
+                                    font.pointSize: root.smallPt
+                                    highlighted: true
+                                    enabled: controller ? !controller.noiseLearnActive : false
+                                    onClicked: {
+                                        if (controller) controller.learnNoiseProfile()
+                                    }
+                                }
+
+                                QQC2.Button {
+                                    text: "Reset Learned Profile"
+                                    icon.name: "edit-reset"
+                                    font.pointSize: root.smallPt
+                                    enabled: controller ? (!controller.noiseLearnActive && controller.noiseProfileLearned) : false
+                                    onClicked: {
+                                        if (controller) controller.resetNoiseProfile()
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                visible: controller ? (controller.noiseLearnActive || controller.noiseLearnProgressPct > 0) : false
+                                height: Math.round(10 * root.zoomScale)
+                                radius: 5
+                                color: Qt.alpha(root.fgColor, 0.12)
+                                border.width: 1
+                                border.color: Qt.alpha(root.fgColor, 0.24)
+
+                                Rectangle {
+                                    width: Math.max(6, Math.round(parent.width * Math.min(1.0, (controller ? controller.noiseLearnProgressPct : 0) / 100.0)))
+                                    height: parent.height
+                                    radius: 5
+                                    color: (controller && controller.noiseLearnActive) ? root.warnCol : root.okCol
+                                }
+                            }
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: controller ? controller.noiseLearnStatus : "Ready to sample ambient room acoustics."
+                                color: (controller && controller.noiseLearnActive) ? root.warnCol : root.mutedFg
+                                font.pointSize: root.captionPt
+                                font.bold: controller ? controller.noiseLearnActive : false
+                                wrapMode: Text.Wrap
+                            }
+
+                            Kirigami.Separator { Layout.fillWidth: true }
+
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: root.width >= 900 ? 2 : 1
+                                columnSpacing: 14
+                                rowSpacing: 6
+
+                                Repeater {
+                                    model: [
+                                        { label: "Sub / HVAC Rumble (20–140 Hz)", db: controller ? controller.bandLowRumbleStr : "-55.0" },
+                                        { label: "PC Fan / Mains Hum (140–550 Hz)", db: controller ? controller.bandFanHumStr : "-51.0" },
+                                        { label: "Mid Room / Reflections (550–2.8kHz)", db: controller ? controller.bandMidRoomStr : "-57.0" },
+                                        { label: "High Preamp Hiss (2.8–12 kHz)", db: controller ? controller.bandHighHissStr : "-59.0" }
+                                    ]
+                                    delegate: ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 3
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            QQC2.Label {
+                                                Layout.fillWidth: true
+                                                text: modelData.label
+                                                color: root.mutedFg
+                                                font.pointSize: root.captionPt
+                                                elide: Text.ElideRight
+                                            }
+                                            QQC2.Label {
+                                                text: modelData.db + " dBFS"
+                                                color: root.fgColor
+                                                font.pointSize: root.captionPt
+                                                font.family: "monospace"
+                                                font.bold: true
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: Math.round(8 * root.zoomScale)
+                                            radius: 4
+                                            color: Qt.alpha(root.fgColor, 0.12)
+                                            border.width: 1
+                                            border.color: Qt.alpha(root.fgColor, 0.22)
+
+                                            Rectangle {
+                                                readonly property real norm: Math.max(0.04, Math.min(1.0, (Number(modelData.db) + 85.0) / 65.0))
+                                                width: Math.round(parent.width * norm)
+                                                height: parent.height
+                                                radius: 4
+                                                color: norm > 0.68 ? root.errCol : (norm > 0.48 ? root.warnCol : root.okCol)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            KeyValueRow {
+                                keyText: "Detected Room Signature:"
+                                valText: controller ? controller.noiseSignature : "—"
+                            }
+                            KeyValueRow {
+                                keyText: "Ambient vs RNNoise Floor:"
+                                valText: controller ? controller.noiseFloorSummary : "—"
+                                monoValue: true
+                                valColor: root.okCol
+                            }
+                            KeyValueRow {
+                                keyText: "Learned Filter & HW Rec:"
+                                valText: controller ? controller.learnedFilterSummary : "—"
+                                monoValue: true
+                            }
+                            KeyValueRow {
+                                keyText: "Last Learned / Pass Count:"
+                                valText: controller
+                                         ? (controller.noiseProfileLearnedAt + " • Adaptive Passes: " + controller.adaptivePasses)
+                                         : "—"
+                            }
+                        }
                     }
                 }
             }
