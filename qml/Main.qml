@@ -929,7 +929,7 @@ Kirigami.ApplicationWindow {
                                 spacing: 12
 
                                 QQC2.Label {
-                                    Layout.preferredWidth: 180
+                                    Layout.preferredWidth: Math.round(180 * root.zoomScale)
                                     text: "Capture Volume (%)"
                                     color: root.fgColor
                                     font.pointSize: root.bodyPt
@@ -949,7 +949,7 @@ Kirigami.ApplicationWindow {
                                 }
 
                                 QQC2.Label {
-                                    Layout.preferredWidth: 64
+                                    Layout.preferredWidth: Math.round(64 * root.zoomScale)
                                     horizontalAlignment: Text.AlignRight
                                     text: Math.round(volSlider.value) + "%"
                                     color: root.fgColor

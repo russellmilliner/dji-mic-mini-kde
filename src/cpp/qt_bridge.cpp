@@ -87,7 +87,9 @@ static void onRustWindowChanged() {
             for (QWindow* w : QGuiApplication::topLevelWindows()) {
                 if (w->objectName() == QStringLiteral("mainWindow")) {
                     w->showNormal();
-                    w->raise();
+                    if (QGuiApplication::platformName() != QStringLiteral("offscreen")) {
+                        w->raise();
+                    }
                     w->requestActivate();
                 }
             }
@@ -208,15 +210,16 @@ static void ensureTaskManagerIconFiles(const QString& appDir) {
     QPixmap pix256 = renderDjiMicPixmap(true, 1, 100, 45, false, 256);
 
     QString home = QDir::homePath();
-    QString assetIcon = appDir + QStringLiteral("/assets/dji-mic-tray.png");
+    QString assetDir = appDir + QStringLiteral("/assets");
     QString hi256 = home + QStringLiteral("/.local/share/icons/hicolor/256x256/apps/dji-mic-tray.png");
     QString hi64 = home + QStringLiteral("/.local/share/icons/hicolor/64x64/apps/dji-mic-tray.png");
 
-    QDir().mkpath(QFileInfo(assetIcon).absolutePath());
     QDir().mkpath(QFileInfo(hi256).absolutePath());
     QDir().mkpath(QFileInfo(hi64).absolutePath());
 
-    pix256.save(assetIcon, "PNG");
+    if (QDir(assetDir).exists()) {
+        pix256.save(assetDir + QStringLiteral("/dji-mic-tray.png"), "PNG");
+    }
     pix256.save(hi256, "PNG");
     pix64.save(hi64, "PNG");
 }
@@ -722,7 +725,11 @@ bool PloopyAndZoomEventFilter::eventFilter(QObject* obj, QEvent* event) {
             }
             m_lastWheelMs = nowMs;
             if (flick) {
-                m_scrollingActive = true;
+                if (!m_scrollingActive) {
+                    m_scrollingActive = true;
+                    QEvent leaveEv(QEvent::HoverLeave);
+                    QCoreApplication::sendEvent(win, &leaveEv);
+                }
                 m_hoverRestoreTimer->start();
                 double curY = flick->property("contentY").toDouble();
                 double origY = flick->property("originY").toDouble();
