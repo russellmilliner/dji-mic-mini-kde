@@ -2,13 +2,13 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
-## [v0.2.0-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.0-deps) — 2026-11-05
+## [v0.2.0-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.0-deps) — 2026-11-06
 
 ### 📦 Bumped Dependencies (1 package)
 
 | Package | Previous | Updated | Scope |
 | :--- | :--- | :--- | :--- |
-| `PyQt6` | `6.6.0` | **`6.12.0`** | Direct (`pyproject.toml`) |
+| `cc` | `1.11.0` | **`1.11.1`** | Direct (`Cargo.toml`) |
 
 ## [v0.2.0](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.0) — 2026-11-04
 

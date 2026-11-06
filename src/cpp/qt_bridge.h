@@ -236,7 +236,9 @@ private:
     QSystemTrayIcon* m_tray = nullptr;
     QMenu* m_trayMenu = nullptr;
     QTimer* m_pollTimer = nullptr;
-    QString m_lastTraySig;
+    QString m_lastTrayIconSig;
+    QString m_lastTrayTip;
+    QString m_lastTrayMenuSig;
 };
 
 class PloopyAndZoomEventFilter : public QObject {

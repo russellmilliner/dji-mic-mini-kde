@@ -396,30 +396,25 @@ void DjiMicController::updateTrayUi(bool force) {
     int txCnt = txConnectedCount();
     int minBat = rust_get_int("minBatteryPct");
     int maxVu = rust_get_int("maxVuLevel");
-    int vuBucket = maxVu / 20;
+    bool vuActive = (rxOk && txCnt > 0 && !alsaMuted() && maxVu > 40);
     bool muted = alsaMuted();
 
-    QString sig = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11")
-                      .arg(rxOk)
-                      .arg(txCnt)
-                      .arg(minBat)
-                      .arg(vuBucket)
-                      .arg(muted)
-                      .arg(udevReady())
-                      .arg(settingNcMode(), settingStereo(), settingLowCut())
-                      .arg(alsaVolumePct())
-                      .arg(alertOnRxDisconnect());
+    QString iconSig = QStringLiteral("%1|%2|%3|%4")
+                          .arg(rxOk)
+                          .arg(txCnt)
+                          .arg(minBat)
+                          .arg(muted);
 
-    if (!force && sig == m_lastTraySig) return;
-    m_lastTraySig = sig;
-
-    QIcon icon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, maxVu, muted);
-    m_tray->setIcon(icon);
-    if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
-        app->setWindowIcon(icon);
-    }
-    for (QWindow* w : QGuiApplication::topLevelWindows()) {
-        w->setIcon(icon);
+    if (force || iconSig != m_lastTrayIconSig) {
+        m_lastTrayIconSig = iconSig;
+        QIcon icon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, vuActive ? 60 : 0, muted);
+        m_tray->setIcon(icon);
+        if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
+            app->setWindowIcon(icon);
+        }
+        for (QWindow* w : QGuiApplication::topLevelWindows()) {
+            w->setIcon(icon);
+        }
     }
 
     QStringList tipLines;
@@ -427,21 +422,40 @@ void DjiMicController::updateTrayUi(bool force) {
     tipLines << QStringLiteral("Receiver RX: %1 (FW %2, S/N %3, Gain %4)")
                     .arg(rxHardwareModel(), rxFirmware(), rxSerial(), rxGainSummary());
     if (tx1Connected()) {
-        tipLines << QStringLiteral("TX 1: Connected • Battery %1% (Code %2/7) • VU %3/255 • S/N %4")
-                        .arg(tx1BatteryPct()).arg(tx1BatteryCode()).arg(tx1VuLevel()).arg(tx1Serial());
+        tipLines << QStringLiteral("TX 1: Connected • Battery %1% (Code %2/7) • S/N %3")
+                        .arg(tx1BatteryPct()).arg(tx1BatteryCode()).arg(tx1Serial());
     } else {
         tipLines << QStringLiteral("TX 1: Disconnected / Off");
     }
     if (tx2Connected()) {
-        tipLines << QStringLiteral("TX 2: Connected • Battery %1% (Code %2/7) • VU %3/255 • S/N %4")
-                        .arg(tx2BatteryPct()).arg(tx2BatteryCode()).arg(tx2VuLevel()).arg(tx2Serial());
+        tipLines << QStringLiteral("TX 2: Connected • Battery %1% (Code %2/7) • S/N %3")
+                        .arg(tx2BatteryPct()).arg(tx2BatteryCode()).arg(tx2Serial());
     } else {
         tipLines << QStringLiteral("TX 2: Disconnected / Off");
     }
     tipLines << QStringLiteral("Settings: %1 • NC %2 • Low-Cut %3 • LEDs %4")
                     .arg(settingStereo().toUpper(), ncOverallSummary(), settingLowCut().toUpper(), settingLeds().toUpper());
     tipLines << QStringLiteral("Linux Audio: %1").arg(linuxAudioSummary());
-    m_tray->setToolTip(tipLines.join('\n'));
+    QString newTip = tipLines.join('\n');
+    if (force || newTip != m_lastTrayTip) {
+        m_lastTrayTip = newTip;
+        m_tray->setToolTip(newTip);
+    }
+
+    QString menuSig = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18")
+                          .arg(rxOk)
+                          .arg(txCnt)
+                          .arg(minBat)
+                          .arg(muted)
+                          .arg(udevReady())
+                          .arg(settingNcMode(), settingStereo(), settingLowCut(), settingSafetyTrack())
+                          .arg(settingClipLimiter(), settingLeds(), settingRxAutoOff(), settingCameraPower(), settingPlugFree())
+                          .arg(alsaVolumePct())
+                          .arg(alertOnRxDisconnect())
+                          .arg(alertOnTxDisconnect())
+                          .arg(alertOnLowBattery());
+    if (!force && menuSig == m_lastTrayMenuSig) return;
+    m_lastTrayMenuSig = menuSig;
 
     m_trayMenu->clear();
     QAction* hdr = m_trayMenu->addAction(QStringLiteral("🎙️ KDE DJI Mic Mini Control — %1").arg(overallStatusBadge()));
