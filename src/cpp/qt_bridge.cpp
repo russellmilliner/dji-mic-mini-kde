@@ -20,6 +20,8 @@
 #include <QKeyEvent>
 #include <QWheelEvent>
 
+#include <KStatusNotifierItem>
+
 #include <cstdio>
 
 extern "C" {
@@ -245,6 +247,7 @@ QString DjiMicController::appIconUrl() const {
     return QStringLiteral("audio-input-microphone");
 }
 
+bool DjiMicController::deviceInUse() const { return rust_get_bool("deviceInUse"); }
 bool DjiMicController::windowVisible() const { return rust_get_bool("windowVisible"); }
 bool DjiMicController::quitting() const { return rust_get_bool("quitting"); }
 int DjiMicController::activeTabIndex() const { return rust_get_int("activeTabIndex"); }
@@ -405,20 +408,29 @@ void DjiMicController::quitApp() {
 }
 
 void DjiMicController::setupTray() {
-    m_tray = new QSystemTrayIcon(this);
+    m_tray = new KStatusNotifierItem(QStringLiteral("dji-mic-tray"), this);
+    m_tray->setCategory(KStatusNotifierItem::Hardware);
+    m_tray->setTitle(QStringLiteral("KDE DJI Mic Mini Control"));
+    m_tray->setStandardActionsEnabled(false);
     m_trayMenu = new QMenu();
     m_tray->setContextMenu(m_trayMenu);
-    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
-        if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
-            toggleWindow();
-        }
+    connect(m_tray, &KStatusNotifierItem::activateRequested, this, [this](bool, const QPoint&) {
+        toggleWindow();
+    });
+    connect(m_tray, &KStatusNotifierItem::secondaryActivateRequested, this, [this](const QPoint&) {
+        setSystemMicMute(!alsaMuted());
     });
     updateTrayUi(true);
-    m_tray->show();
 }
 
 void DjiMicController::updateTrayUi(bool force) {
     if (!m_tray || !m_trayMenu) return;
+
+    KStatusNotifierItem::ItemStatus targetStatus =
+        deviceInUse() ? KStatusNotifierItem::Active : KStatusNotifierItem::Passive;
+    if (m_tray->status() != targetStatus) {
+        m_tray->setStatus(targetStatus);
+    }
 
     bool rxOk = rxConnected();
     int txCnt = txConnectedCount();
@@ -433,10 +445,10 @@ void DjiMicController::updateTrayUi(bool force) {
                           .arg(minBat)
                           .arg(muted);
 
+    QIcon icon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, vuActive ? 60 : 0, muted);
     if (force || iconSig != m_lastTrayIconSig) {
         m_lastTrayIconSig = iconSig;
-        QIcon icon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, vuActive ? 60 : 0, muted);
-        m_tray->setIcon(icon);
+        m_tray->setIconByPixmap(icon);
         if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
             app->setWindowIcon(icon);
         }
@@ -445,8 +457,8 @@ void DjiMicController::updateTrayUi(bool force) {
         }
     }
 
+    QString tipTitle = QStringLiteral("KDE DJI Mic Mini Control — %1").arg(overallStatusBadge());
     QStringList tipLines;
-    tipLines << QStringLiteral("KDE DJI Mic Mini Control (Rust) — %1").arg(overallStatusBadge());
     tipLines << QStringLiteral("Receiver RX: %1 (FW %2, S/N %3, Gain %4)")
                     .arg(rxHardwareModel(), rxFirmware(), rxSerial(), rxGainSummary());
     if (tx1Connected()) {
@@ -464,10 +476,11 @@ void DjiMicController::updateTrayUi(bool force) {
     tipLines << QStringLiteral("Settings: %1 • NC %2 • Low-Cut %3 • LEDs %4")
                     .arg(settingStereo().toUpper(), ncOverallSummary(), settingLowCut().toUpper(), settingLeds().toUpper());
     tipLines << QStringLiteral("Linux Audio: %1").arg(linuxAudioSummary());
-    QString newTip = tipLines.join('\n');
+    QString tipSub = tipLines.join('\n');
+    QString newTip = tipTitle + QStringLiteral("\n") + tipSub;
     if (force || newTip != m_lastTrayTip) {
         m_lastTrayTip = newTip;
-        m_tray->setToolTip(newTip);
+        m_tray->setToolTip(icon, tipTitle, tipSub);
     }
 
     QString menuSig = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18")

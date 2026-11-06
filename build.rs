@@ -36,6 +36,7 @@ fn main() {
         .flag_if_supported("-fPIC")
         .flag_if_supported("-Wno-unused-parameter")
         .include("src/cpp")
+        .include("/usr/include/KF6/KStatusNotifierItem")
         .file("src/cpp/qt_bridge.cpp")
         .file(&moc_cpp);
 
@@ -49,6 +50,8 @@ fn main() {
     }
 
     build.compile("dji_mic_qt_cpp");
+
+    println!("cargo:rustc-link-lib=KF6StatusNotifierItem");
 
     for m in &qt_modules {
         let pkg = pkg_config::Config::new()

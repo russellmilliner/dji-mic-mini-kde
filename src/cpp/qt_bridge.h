@@ -3,11 +3,12 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
-#include <QSystemTrayIcon>
 #include <QMenu>
 #include <QQuickItem>
 #include <QPointF>
 #include <QEvent>
+
+class KStatusNotifierItem;
 
 class DjiMicController : public QObject {
     Q_OBJECT
@@ -126,6 +127,7 @@ public:
     ~DjiMicController() override = default;
 
     QString appIconUrl() const;
+    bool deviceInUse() const;
     bool windowVisible() const;
     bool quitting() const;
     int activeTabIndex() const;
@@ -274,7 +276,7 @@ signals:
 private:
     bool m_uiTestMode = false;
     QString m_appDir;
-    QSystemTrayIcon* m_tray = nullptr;
+    KStatusNotifierItem* m_tray = nullptr;
     QMenu* m_trayMenu = nullptr;
     QTimer* m_pollTimer = nullptr;
     QString m_lastTrayIconSig;

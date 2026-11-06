@@ -753,12 +753,29 @@ pub extern "C" fn rust_poll_tick() {
     poll_tick_internal(false);
 }
 
+fn is_alsa_card_capturing(card_index: Option<i32>) -> bool {
+    let Some(idx) = card_index else {
+        return false;
+    };
+    let status_path = format!("/proc/asound/card{idx}/pcm0c/sub0/status");
+    if let Ok(txt) = fs::read_to_string(status_path) {
+        return txt.contains("RUNNING");
+    }
+    false
+}
+
 #[no_mangle]
 pub extern "C" fn rust_get_bool(key_ptr: *const c_char) -> bool {
     let key = c_str_to_rust(key_ptr);
     let st = get_state().lock().unwrap();
     let rx_ok = st.usb_info.present && st.status.connected;
     match key.as_str() {
+        "deviceInUse" => {
+            st.window_visible
+                || (rx_ok
+                    && (is_alsa_card_capturing(st.alsa_card.card_index)
+                        || get_noise_learn_live_state().learning_active))
+        }
         "windowVisible" => st.window_visible,
         "quitting" => st.quitting,
         "alertOnRxDisconnect" => st.config.alert_on_rx_disconnect,
