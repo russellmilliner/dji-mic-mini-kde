@@ -1551,8 +1551,8 @@ Kirigami.ApplicationWindow {
                         InfoCard {
                             objectName: "aboutHeaderCard"
                             cardTitle: "KDE DJI Mic Mini Control"
-                            cardSubtitle: "Version 0.2.0 • KDE Plasma 6 Kirigami + libusb-1.0 DUML v1/v2 + PipeWire/ALSA"
-                            rightBadgeText: "v0.2.0"
+                            cardSubtitle: "Version 0.2.1 • KDE Plasma 6 Kirigami + libusb-1.0 DUML v1/v2 + PipeWire/ALSA"
+                            rightBadgeText: "v0.2.1"
                             rightBadgeColor: root.accentCol
 
                             RowLayout {

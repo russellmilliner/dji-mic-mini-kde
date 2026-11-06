@@ -2,6 +2,19 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
+## [v0.2.1](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.1) — 2026-11-06
+
+### Added
+- **Hardware-Aware `KStatusNotifierItem` System Tray Integration** (`src/cpp/qt_bridge.cpp`, `src/lib.rs`):
+  - Migrated from `QSystemTrayIcon` (which hardcodes `Status = "Active"`) to KDE Frameworks 6 `KStatusNotifierItem` (`Category = Hardware`).
+  - Automatically switches tray `Status` between `Active` (shown on the KDE panel when TX1/TX2 is linked, an app is capturing from the DJI Mic Mini in PipeWire, or the AI NC virtual mic is active) and `Passive` (tucked into the hidden tray drawer when idle).
+- **AI Noise Cancellation & Ambient Room Noise Learning** (`src/audio.rs`, `qml/Main.qml`):
+  - Added 3.5-second ambient room noise profiler (`learn_noise_profile`) that records a live 48 kHz mono calibration sample from the DJI Mic Mini RX, computes a 4-band spectral fingerprint (Low Rumble `<150 Hz`, Fan/Mains Hum `150–400 Hz`, Mid Room `400–2500 Hz`, High Hiss `>2500 Hz`), and automatically calibrates hardware TX Noise Cancellation (`Basic`/`Strong`), `150 Hz` Low-Cut filter, Clip Limiter, and the PipeWire `filter-chain` virtual microphone (`dji_mic_mini_ai_nc_source`).
+
+### Changed & Fixed
+- **KDE Plasma 6 / Qt 6 QML Reviewer Polish**:
+  - Scaled ALSA Capture Volume label widths by `root.zoomScale`, guarded `w->raise()` when running under `QT_QPA_PLATFORM=offscreen`, and added synthetic `QEvent::HoverLeave` dispatch on Ploopy high-resolution wheel scroll start.
+
 ## [v0.2.0-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.0-deps) — 2026-11-06
 
 ### 📦 Bumped Dependencies (1 package)
