@@ -11,7 +11,8 @@ Kirigami.ApplicationWindow {
     height: 780
     minimumWidth: 760
     minimumHeight: 540
-    title: "KDE DJI Mic Mini Control"
+    readonly property string appVer: (controller && controller.appVersion) ? controller.appVersion : "0.2.1"
+    title: "KDE DJI Mic Mini Control v" + appVer
 
     readonly property real basePointSize: (Kirigami.Theme.defaultFont && Kirigami.Theme.defaultFont.pointSize > 0)
                                           ? Kirigami.Theme.defaultFont.pointSize : 10.0
@@ -420,7 +421,7 @@ Kirigami.ApplicationWindow {
                     Kirigami.Heading {
                         Layout.fillWidth: true
                         level: 2
-                        text: "KDE DJI Mic Mini Control"
+                        text: "KDE DJI Mic Mini Control v" + root.appVer
                         color: root.fgColor
                         font.pointSize: root.headPt
                         font.bold: true
@@ -461,76 +462,125 @@ Kirigami.ApplicationWindow {
             }
         }
 
-        // Standard KDE Plasma Primary Navigation TabBar (Rule 7.6)
-        QQC2.TabBar {
-            id: mainTabBar
-            objectName: "mainTabBar"
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            Layout.topMargin: 6
-            Layout.bottomMargin: 4
-            spacing: Math.round(10 * root.zoomScale)
-            currentIndex: controller ? controller.activeTabIndex : 0
-            onCurrentIndexChanged: {
-                if (controller && controller.activeTabIndex !== currentIndex) {
-                    controller.setActiveTabIndex(currentIndex)
-                }
-            }
-            onImplicitWidthChanged: {
-                var needed = Math.ceil(implicitWidth + 40)
-                if (root.width < needed) {
-                    root.width = needed
-                }
-            }
-
-            // Override org.kde.desktop TabBar's internal ListView.spacing (-tabOverlap)
-            // so tabs have genuine visual separation between each other
-            Binding {
-                target: mainTabBar.contentItem
-                property: "spacing"
-                value: Math.round(10 * root.zoomScale)
-                when: mainTabBar.contentItem !== null
-            }
-
-            QQC2.TabButton {
-                text: "Overview & Telemetry"
-                icon.name: "audio-input-microphone"
-                font.pointSize: root.bodyPt
-                width: implicitWidth + Math.round(16 * root.zoomScale)
-            }
-            QQC2.TabButton {
-                text: "Hardware Controls"
-                icon.name: "configure"
-                font.pointSize: root.bodyPt
-                width: implicitWidth + Math.round(16 * root.zoomScale)
-            }
-            QQC2.TabButton {
-                text: "USB & Protocol Inspector"
-                icon.name: "utilities-terminal"
-                font.pointSize: root.bodyPt
-                width: implicitWidth + Math.round(16 * root.zoomScale)
-            }
-            QQC2.TabButton {
-                text: "Alerts, udev & Settings"
-                icon.name: "preferences-system"
-                font.pointSize: root.bodyPt
-                width: implicitWidth + Math.round(16 * root.zoomScale)
-            }
-            QQC2.TabButton {
-                objectName: "tabButtonAbout"
-                text: "About"
-                icon.name: "help-about"
-                font.pointSize: root.bodyPt
-                width: implicitWidth + Math.round(16 * root.zoomScale)
-            }
-        }
-
-        // Main Tab Views
-        StackLayout {
+        // Standard KDE Plasma Primary Navigation TabBar Attached Directly to Its Content Box (Rule 7.6)
+        ColumnLayout {
+            id: tabGroupContainer
+            objectName: "tabGroupContainer"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: mainTabBar.currentIndex
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.topMargin: 8
+            Layout.bottomMargin: 8
+            spacing: 0
+
+            QQC2.TabBar {
+                id: mainTabBar
+                objectName: "mainTabBar"
+                Layout.fillWidth: true
+                spacing: Math.round(10 * root.zoomScale)
+                currentIndex: controller ? controller.activeTabIndex : 0
+                onCurrentIndexChanged: {
+                    if (controller && controller.activeTabIndex !== currentIndex) {
+                        controller.setActiveTabIndex(currentIndex)
+                    }
+                }
+                onImplicitWidthChanged: {
+                    var needed = Math.ceil(implicitWidth + 40)
+                    if (root.width < needed) {
+                        root.width = needed
+                    }
+                }
+
+                // Override org.kde.desktop TabBar's internal ListView.spacing (-tabOverlap)
+                // so tabs have genuine visual separation between each other
+                Binding {
+                    target: mainTabBar.contentItem
+                    property: "spacing"
+                    value: Math.round(10 * root.zoomScale)
+                    when: mainTabBar.contentItem !== null
+                }
+
+                QQC2.TabButton {
+                    text: "Overview & Telemetry"
+                    icon.name: "audio-input-microphone"
+                    font.pointSize: root.bodyPt
+                    width: implicitWidth + Math.round(16 * root.zoomScale)
+                }
+                QQC2.TabButton {
+                    text: "Hardware Controls"
+                    icon.name: "configure"
+                    font.pointSize: root.bodyPt
+                    width: implicitWidth + Math.round(16 * root.zoomScale)
+                }
+                QQC2.TabButton {
+                    text: "USB & Protocol Inspector"
+                    icon.name: "utilities-terminal"
+                    font.pointSize: root.bodyPt
+                    width: implicitWidth + Math.round(16 * root.zoomScale)
+                }
+                QQC2.TabButton {
+                    text: "Alerts, udev & Settings"
+                    icon.name: "preferences-system"
+                    font.pointSize: root.bodyPt
+                    width: implicitWidth + Math.round(16 * root.zoomScale)
+                }
+                QQC2.TabButton {
+                    objectName: "tabButtonAbout"
+                    text: "About"
+                    icon.name: "help-about"
+                    font.pointSize: root.bodyPt
+                    width: implicitWidth + Math.round(16 * root.zoomScale)
+                }
+            }
+
+            // Attached Bordered Box Surrounding Tab Content (Rule 7.6)
+            Rectangle {
+                id: tabContentBox
+                objectName: "tabContentBox"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: Qt.alpha(root.cardBg, 0.55)
+                border.width: 1
+                border.color: root.borderCol
+                radius: 6
+                clip: true
+
+                // Square top-left and top-right corners where TabBar attaches directly to the box
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 6
+                    color: parent.color
+                    border.width: 0
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 1
+                    color: root.borderCol
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    width: 1
+                    height: 6
+                    color: root.borderCol
+                }
+                Rectangle {
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    width: 1
+                    height: 6
+                    color: root.borderCol
+                }
+
+                // Main Tab Views
+                StackLayout {
+                    anchors.fill: parent
+                    currentIndex: mainTabBar.currentIndex
 
             // =========================================================
             // TAB 0: OVERVIEW & LIVE TELEMETRY
@@ -1551,8 +1601,8 @@ Kirigami.ApplicationWindow {
                         InfoCard {
                             objectName: "aboutHeaderCard"
                             cardTitle: "KDE DJI Mic Mini Control"
-                            cardSubtitle: "Version 0.2.1 • KDE Plasma 6 Kirigami + libusb-1.0 DUML v1/v2 + PipeWire/ALSA"
-                            rightBadgeText: "v0.2.1"
+                            cardSubtitle: "Version " + root.appVer + " • KDE Plasma 6 Kirigami + libusb-1.0 DUML v1/v2 + PipeWire/ALSA"
+                            rightBadgeText: "v" + root.appVer
                             rightBadgeColor: root.accentCol
 
                             RowLayout {
@@ -1654,6 +1704,8 @@ Kirigami.ApplicationWindow {
                             }
                         }
                     }
+                }
+            }
                 }
             }
         }

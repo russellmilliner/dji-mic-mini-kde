@@ -824,6 +824,21 @@ extern "C" int cpp_run_dji_mic_tray(int argc, char** argv, bool startMinimized, 
     if (uiTestMode) {
         QStringList violations;
         app.processEvents();
+        if (!win->title().contains(controller.appVersion())) {
+            violations.append(QStringLiteral("Window title ('%1') does not contain appVersion ('%2')")
+                                  .arg(win->title(), controller.appVersion()));
+        }
+        auto* tbQuick = win->findChild<QQuickItem*>(QStringLiteral("mainTabBar"));
+        auto* boxQuick = win->findChild<QQuickItem*>(QStringLiteral("tabContentBox"));
+        if (!tbQuick || !boxQuick) {
+            violations.append(QStringLiteral("Missing mainTabBar or attached tabContentBox"));
+        } else {
+            double gap = qAbs((tbQuick->y() + tbQuick->height()) - boxQuick->y());
+            if (gap > 2.0) {
+                violations.append(QStringLiteral("mainTabBar is not attached directly to tabContentBox (gap=%1px)")
+                                      .arg(gap, 0, 'f', 1));
+            }
+        }
         QObject* tbItem = win->findChild<QObject*>(QStringLiteral("mainTabBar"));
         if (tbItem) {
             QObject* ci = tbItem->property("contentItem").value<QObject*>();

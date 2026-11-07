@@ -13,6 +13,7 @@ class KStatusNotifierItem;
 class DjiMicController : public QObject {
     Q_OBJECT
 
+    Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
     Q_PROPERTY(QString appIconUrl READ appIconUrl CONSTANT)
     Q_PROPERTY(bool windowVisible READ windowVisible NOTIFY windowChanged)
     Q_PROPERTY(bool quitting READ quitting NOTIFY windowChanged)
@@ -126,6 +127,13 @@ public:
     explicit DjiMicController(bool startMinimized, bool uiTestMode, const QString& appDir, QObject* parent = nullptr);
     ~DjiMicController() override = default;
 
+    QString appVersion() const {
+#ifdef APP_VERSION_STR
+        return QStringLiteral(APP_VERSION_STR);
+#else
+        return QStringLiteral("0.2.1");
+#endif
+    }
     QString appIconUrl() const;
     bool deviceInUse() const;
     bool windowVisible() const;

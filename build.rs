@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/cpp/qt_bridge.cpp");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let pkg_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.2.1".to_string());
     let moc_cpp = out_dir.join("moc_qt_bridge.cpp");
 
     let moc_candidates = ["/usr/lib/qt6/moc", "/usr/libexec/qt6/moc", "moc-qt6", "moc"];
@@ -32,6 +33,7 @@ fn main() {
     let mut build = cc::Build::new();
     build
         .cpp(true)
+        .define("APP_VERSION_STR", Some(format!("\"{}\"", pkg_version).as_str()))
         .flag_if_supported("-std=c++17")
         .flag_if_supported("-fPIC")
         .flag_if_supported("-Wno-unused-parameter")

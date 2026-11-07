@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dji-mic-mini-kde"
-version = "0.2.1"
+version = "0.2.2"
 description = "KDE DJI Mic Mini Control — KDE Plasma 6 / Kirigami System Tray, DUML v1/v2 USB Telemetry, Hardware Controller & Desktop Alert Daemon for DJI Mic Mini (2ca3:4011)"
 readme = "README.md"
 license = { text = "MIT" }

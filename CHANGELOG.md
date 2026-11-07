@@ -2,6 +2,12 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
+## [v0.2.2](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.2) — 2026-11-06
+
+### Added & Changed
+- **Version in Window Title Bar & Header**: Added compile-time `appVersion` property (`CARGO_PKG_VERSION`) to `DjiMicController` and displayed `KDE DJI Mic Mini Control v0.2.2` in the main window title bar, top header banner, and About card.
+- **Unified Bordered Tab Content Box Attached Directly to `QQC2.TabBar` (Rule 7.6)**: Grouped `mainTabBar` and a bordered `tabContentBox` inside a `spacing: 0` `tabGroupContainer` so each tab attaches directly to the top edge of the surrounding content box.
+
 ## [v0.2.1](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.1) — 2026-11-06
 
 ### Added
