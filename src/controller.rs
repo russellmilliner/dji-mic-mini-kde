@@ -32,12 +32,20 @@ pub struct AppConfig {
     pub alert_on_tx_disconnect: bool,
     pub alert_on_low_battery: bool,
     pub low_battery_threshold_pct: i32,
+    #[serde(default = "default_true")]
+    pub start_on_login: bool,
+    #[serde(default = "default_true")]
+    pub start_minimized: bool,
     #[serde(default = "default_ai_nc_mode")]
     pub ai_nc_mode: String,
     #[serde(default = "default_ai_nc_strength")]
     pub ai_nc_strength_pct: i32,
     #[serde(default)]
     pub ai_nc_virtual_mic: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_ai_nc_mode() -> String {
@@ -57,10 +65,132 @@ impl Default for AppConfig {
             alert_on_tx_disconnect: true,
             alert_on_low_battery: true,
             low_battery_threshold_pct: 25,
+            start_on_login: true,
+            start_minimized: true,
             ai_nc_mode: "learned_ai".to_string(),
             ai_nc_strength_pct: 80,
             ai_nc_virtual_mic: false,
         }
+    }
+}
+
+pub fn systemd_service_unit_content(start_minimized: bool) -> String {
+    let flag = if start_minimized { " --minimized" } else { "" };
+    format!(
+        "[Unit]\n\
+Description=KDE DJI Mic Mini Control (Rust) — System Tray Telemetry, Hardware Controller & Disconnection Alert Monitor\n\
+After=graphical-session.target pipewire.service wireplumber.service\n\
+PartOf=graphical-session.target\n\
+\n\
+[Service]\n\
+Type=simple\n\
+ExecStart=%h/.local/bin/dji-mic-tray{flag}\n\
+Restart=on-failure\n\
+RestartSec=3\n\
+Environment=QT_QUICK_CONTROLS_STYLE=org.kde.desktop\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n"
+    )
+}
+
+pub fn read_start_minimized_config() -> bool {
+    let cp = config_path();
+    if let Ok(txt) = fs::read_to_string(&cp) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&txt) {
+            if let Some(v) = parsed.get("start_minimized").and_then(|v| v.as_bool()) {
+                return v;
+            }
+        }
+    }
+    true
+}
+
+pub fn autostart_desktop_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("autostart")
+        .join("dji-mic-tray.desktop")
+}
+
+pub fn systemd_user_unit_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("systemd")
+        .join("user")
+        .join("dji-mic-tray.service")
+}
+
+pub fn check_start_on_login_enabled() -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    let wants_link = PathBuf::from(&home)
+        .join(".config/systemd/user/graphical-session.target.wants/dji-mic-tray.service");
+    let default_wants_link = PathBuf::from(&home)
+        .join(".config/systemd/user/default.target.wants/dji-mic-tray.service");
+    if wants_link.exists() || default_wants_link.exists() || autostart_desktop_path().exists() {
+        return true;
+    }
+    if let Ok(out) = Command::new("systemctl")
+        .args(["--user", "is-enabled", "dji-mic-tray.service"])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s == "enabled" || s == "enabled-runtime" {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn apply_start_on_login(enabled: bool, start_minimized: bool) -> (bool, String) {
+    let unit_path = systemd_user_unit_path();
+    let auto_path = autostart_desktop_path();
+    let min_flag = if start_minimized { " --minimized" } else { "" };
+    if let Some(parent) = unit_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&unit_path, systemd_service_unit_content(start_minimized));
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+
+    if enabled {
+        let st = Command::new("systemctl")
+            .args(["--user", "enable", "dji-mic-tray.service"])
+            .status();
+        if st.map(|s| s.success()).unwrap_or(false) {
+            let _ = fs::remove_file(&auto_path);
+            return (
+                true,
+                format!(
+                    "Start on Login ENABLED (dji-mic-tray.service • Start Minimized: {})",
+                    if start_minimized { "ON" } else { "OFF" }
+                ),
+            );
+        }
+        if let Some(parent) = auto_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+        let desktop_body = format!(
+            "[Desktop Entry]\nType=Application\nName=KDE DJI Mic Mini Control\nComment=Start DJI Mic Mini System Tray Daemon on Login\nExec={home}/.local/bin/dji-mic-tray{min_flag}\nIcon=dji-mic-tray\nTerminal=false\nCategories=AudioVideo;Audio;Mixer;Utility;Qt;KDE;\nX-KDE-autostart-after=panel\n"
+        );
+        let _ = fs::write(&auto_path, desktop_body);
+        (
+            true,
+            format!("Start on Login ENABLED ({})", auto_path.to_string_lossy()),
+        )
+    } else {
+        let _ = Command::new("systemctl")
+            .args(["--user", "disable", "dji-mic-tray.service"])
+            .status();
+        let _ = fs::remove_file(&auto_path);
+        (
+            true,
+            "Start on Login DISABLED (dji-mic-tray.service disabled)".to_string(),
+        )
     }
 }
 
@@ -151,7 +281,14 @@ pub fn get_state() -> &'static Arc<Mutex<BackendState>> {
                 if let Ok(loaded) = serde_json::from_str::<AppConfig>(&txt) {
                     cfg = loaded;
                 }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if val.get("start_on_login").is_none() {
+                        cfg.start_on_login = check_start_on_login_enabled();
+                    }
+                }
             }
+        } else {
+            cfg.start_on_login = check_start_on_login_enabled();
         }
         cfg.ui_zoom_percent = cfg.ui_zoom_percent.clamp(75, 175);
 
@@ -778,6 +915,8 @@ pub extern "C" fn rust_get_bool(key_ptr: *const c_char) -> bool {
         }
         "windowVisible" => st.window_visible,
         "quitting" => st.quitting,
+        "startOnLogin" => st.config.start_on_login,
+        "startMinimized" => st.config.start_minimized,
         "alertOnRxDisconnect" => st.config.alert_on_rx_disconnect,
         "alertOnTxDisconnect" => st.config.alert_on_tx_disconnect,
         "alertOnLowBattery" => st.config.alert_on_low_battery,
@@ -1728,6 +1867,39 @@ pub extern "C" fn rust_notify_json_copied() {
         let mut st = get_state().lock().unwrap();
         st.last_action_message = "Copied full JSON telemetry snapshot to clipboard!".to_string();
     }
+    emit_state_changed();
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_start_on_login(enabled: bool) {
+    {
+        let mut st = get_state().lock().unwrap();
+        st.config.start_on_login = enabled;
+        if !st.ui_test_mode {
+            let (_, msg) = apply_start_on_login(enabled, st.config.start_minimized);
+            st.last_action_message = msg;
+        }
+        save_config(&st);
+    }
+    emit_config_changed();
+    emit_state_changed();
+}
+
+#[no_mangle]
+pub extern "C" fn rust_set_start_minimized(enabled: bool) {
+    {
+        let mut st = get_state().lock().unwrap();
+        st.config.start_minimized = enabled;
+        if !st.ui_test_mode {
+            let _ = apply_start_on_login(st.config.start_on_login, enabled);
+            st.last_action_message = format!(
+                "Start Minimized to System Tray -> {}",
+                if enabled { "ENABLED" } else { "DISABLED" }
+            );
+        }
+        save_config(&st);
+    }
+    emit_config_changed();
     emit_state_changed();
 }
 

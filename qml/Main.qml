@@ -1403,6 +1403,55 @@ Kirigami.ApplicationWindow {
                         }
 
                         InfoCard {
+                            cardTitle: "Startup & System Tray Behavior (Instant Save)"
+                            cardSubtitle: "All changes apply and persist to ~/.config/dji-mic-tray/config.json and systemd user unit immediately."
+                            rightBadgeText: "INSTANT SAVE"
+                            rightBadgeColor: root.okCol
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                QQC2.Label {
+                                    Layout.fillWidth: true
+                                    text: "Start KDE DJI Mic Mini Control Automatically on Login"
+                                    color: root.fgColor
+                                    font.pointSize: root.bodyPt
+                                    font.bold: true
+                                    wrapMode: Text.Wrap
+                                }
+                                QQC2.Switch {
+                                    checked: controller ? controller.startOnLogin : true
+                                    text: checked ? "Enabled" : "Disabled"
+                                    font.pointSize: root.smallPt
+                                    onToggled: {
+                                        if (controller) controller.setStartOnLogin(checked)
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                QQC2.Label {
+                                    Layout.fillWidth: true
+                                    text: "Start Minimized to System Tray"
+                                    color: root.fgColor
+                                    font.pointSize: root.bodyPt
+                                    font.bold: true
+                                    wrapMode: Text.Wrap
+                                }
+                                QQC2.Switch {
+                                    checked: controller ? controller.startMinimized : true
+                                    text: checked ? "Enabled" : "Disabled"
+                                    font.pointSize: root.smallPt
+                                    onToggled: {
+                                        if (controller) controller.setStartMinimized(checked)
+                                    }
+                                }
+                            }
+                        }
+
+                        InfoCard {
                             cardTitle: "Desktop Popup Alert Rules (Instant Save)"
                             cardSubtitle: "Sends a KDE Plasma desktop popup notification if the DJI Mic Mini Receiver or Wireless Transmitter is not connected."
 

@@ -117,11 +117,21 @@ fn main() {
         .map(|cs| cs.as_ptr() as *mut c_char)
         .collect();
 
+    let start_minimized = if ui_test {
+        false
+    } else if minimized {
+        true
+    } else if show || toggle {
+        false
+    } else {
+        dji_mic_mini_kde::controller::read_start_minimized_config()
+    };
+
     let rc = unsafe {
         cpp_run_dji_mic_tray(
             c_ptrs.len() as c_int,
             c_ptrs.as_mut_ptr(),
-            minimized,
+            start_minimized,
             ui_test,
             app_dir.as_ptr(),
         )

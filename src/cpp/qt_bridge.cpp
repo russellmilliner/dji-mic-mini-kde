@@ -49,6 +49,8 @@ extern "C" {
     void rust_set_ai_nc_strength(int pct);
     void rust_set_ai_nc_virtual_mic(bool enabled);
     void rust_notify_json_copied();
+    void rust_set_start_on_login(bool enabled);
+    void rust_set_start_minimized(bool enabled);
     void rust_set_alert_on_rx_disconnect(bool enabled);
     void rust_set_alert_on_tx_disconnect(bool enabled);
     void rust_set_alert_on_low_battery(bool enabled);
@@ -256,6 +258,8 @@ bool DjiMicController::quitting() const { return rust_get_bool("quitting"); }
 int DjiMicController::activeTabIndex() const { return rust_get_int("activeTabIndex"); }
 int DjiMicController::uiZoomPercent() const { return rust_get_int("uiZoomPercent"); }
 QString DjiMicController::colorScheme() const { return rStr("colorScheme"); }
+bool DjiMicController::startOnLogin() const { return rust_get_bool("startOnLogin"); }
+bool DjiMicController::startMinimized() const { return rust_get_bool("startMinimized"); }
 bool DjiMicController::alertOnRxDisconnect() const { return rust_get_bool("alertOnRxDisconnect"); }
 bool DjiMicController::alertOnTxDisconnect() const { return rust_get_bool("alertOnTxDisconnect"); }
 bool DjiMicController::alertOnLowBattery() const { return rust_get_bool("alertOnLowBattery"); }
@@ -394,6 +398,8 @@ void DjiMicController::copyJsonSnapshotToClipboard() {
         rust_notify_json_copied();
     }
 }
+void DjiMicController::setStartOnLogin(bool enabled) { rust_set_start_on_login(enabled); }
+void DjiMicController::setStartMinimized(bool enabled) { rust_set_start_minimized(enabled); }
 void DjiMicController::setAlertOnRxDisconnect(bool enabled) { rust_set_alert_on_rx_disconnect(enabled); }
 void DjiMicController::setAlertOnTxDisconnect(bool enabled) { rust_set_alert_on_tx_disconnect(enabled); }
 void DjiMicController::setAlertOnLowBattery(bool enabled) { rust_set_alert_on_low_battery(enabled); }

@@ -20,6 +20,8 @@ class DjiMicController : public QObject {
     Q_PROPERTY(int activeTabIndex READ activeTabIndex NOTIFY windowChanged)
     Q_PROPERTY(int uiZoomPercent READ uiZoomPercent NOTIFY configChanged)
     Q_PROPERTY(QString colorScheme READ colorScheme NOTIFY configChanged)
+    Q_PROPERTY(bool startOnLogin READ startOnLogin NOTIFY configChanged)
+    Q_PROPERTY(bool startMinimized READ startMinimized NOTIFY configChanged)
     Q_PROPERTY(bool alertOnRxDisconnect READ alertOnRxDisconnect NOTIFY configChanged)
     Q_PROPERTY(bool alertOnTxDisconnect READ alertOnTxDisconnect NOTIFY configChanged)
     Q_PROPERTY(bool alertOnLowBattery READ alertOnLowBattery NOTIFY configChanged)
@@ -141,6 +143,8 @@ public:
     int activeTabIndex() const;
     int uiZoomPercent() const;
     QString colorScheme() const;
+    bool startOnLogin() const;
+    bool startMinimized() const;
     bool alertOnRxDisconnect() const;
     bool alertOnTxDisconnect() const;
     bool alertOnLowBattery() const;
@@ -261,6 +265,8 @@ public:
     Q_INVOKABLE void setAiNcStrength(int pct);
     Q_INVOKABLE void setAiNcVirtualMic(bool enabled);
     Q_INVOKABLE void copyJsonSnapshotToClipboard();
+    Q_INVOKABLE void setStartOnLogin(bool enabled);
+    Q_INVOKABLE void setStartMinimized(bool enabled);
     Q_INVOKABLE void setAlertOnRxDisconnect(bool enabled);
     Q_INVOKABLE void setAlertOnTxDisconnect(bool enabled);
     Q_INVOKABLE void setAlertOnLowBattery(bool enabled);
