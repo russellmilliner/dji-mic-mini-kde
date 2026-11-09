@@ -237,7 +237,15 @@ pub fn reset_learned_noise_profile() -> NoiseLearningProfile {
     def
 }
 
+static VIRTUAL_MIC_CACHE: LazyLock<Mutex<Option<(Instant, bool)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 pub fn is_pipewire_ai_virtual_mic_loaded() -> bool {
+    if let Some((ts, cached)) = *VIRTUAL_MIC_CACHE.lock().unwrap() {
+        if ts.elapsed() < Duration::from_secs(4) {
+            return cached;
+        }
+    }
     let Ok(out) = Command::new("pactl").args(["list", "sources", "short"]).output() else {
         return false;
     };
@@ -245,10 +253,13 @@ pub fn is_pipewire_ai_virtual_mic_loaded() -> bool {
         return false;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.contains("dji_ai_denoise_mic")
+    let active = stdout.contains("dji_ai_denoise_mic");
+    *VIRTUAL_MIC_CACHE.lock().unwrap() = Some((Instant::now(), active));
+    active
 }
 
 pub fn sync_pipewire_ai_virtual_mic(enabled: bool, force_reload: bool) -> (bool, String) {
+    *VIRTUAL_MIC_CACHE.lock().unwrap() = None;
     if !enabled || force_reload {
         if let Ok(out) = Command::new("pactl").args(["list", "modules", "short"]).output() {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -263,6 +274,7 @@ pub fn sync_pipewire_ai_virtual_mic(enabled: bool, force_reload: bool) -> (bool,
             }
         }
         if !enabled {
+            *VIRTUAL_MIC_CACHE.lock().unwrap() = Some((Instant::now(), false));
             return (
                 false,
                 "PipeWire AI Noise-Cancelled Virtual Mic disabled".to_string(),
@@ -295,16 +307,19 @@ pub fn sync_pipewire_ai_virtual_mic(enabled: bool, force_reload: bool) -> (bool,
         .output();
 
     match res {
-        Ok(o) if o.status.success() => (
-            true,
-            format!(
-                "Loaded PipeWire AI Virtual Mic 'dji_ai_denoise_mic' (HP {}Hz, Notch {}Hz {:.1}dB, VAD {}%)",
-                prof.learned_highpass_hz,
-                prof.learned_notch_hz,
-                prof.learned_notch_db,
-                prof.learned_vad_threshold_pct
-            ),
-        ),
+        Ok(o) if o.status.success() => {
+            *VIRTUAL_MIC_CACHE.lock().unwrap() = Some((Instant::now(), true));
+            (
+                true,
+                format!(
+                    "Loaded PipeWire AI Virtual Mic 'dji_ai_denoise_mic' (HP {}Hz, Notch {}Hz {:.1}dB, VAD {}%)",
+                    prof.learned_highpass_hz,
+                    prof.learned_notch_hz,
+                    prof.learned_notch_db,
+                    prof.learned_vad_threshold_pct
+                ),
+            )
+        }
         Ok(o) => (
             false,
             format!(
@@ -1052,6 +1067,8 @@ pub fn get_pipewire_stream_details() -> PipewireStreamInfo {
     {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
+            *VIRTUAL_MIC_CACHE.lock().unwrap() =
+                Some((Instant::now(), stdout.contains("dji_ai_denoise_mic")));
             for line in stdout.lines() {
                 if line.contains("DJI_MIC_MINI") || line.contains("DJI MIC MINI") {
                     let parts: Vec<&str> = line.split('\t').collect();
