@@ -1537,9 +1537,12 @@ Kirigami.ApplicationWindow {
                                 }
                             }
 
-                            RowLayout {
+                            Flow {
                                 Layout.fillWidth: true
-                                spacing: 12
+                                Layout.minimumHeight: implicitHeight
+                                Layout.preferredHeight: implicitHeight
+                                width: parent.width
+                                spacing: 10
 
                                 QQC2.Button {
                                     text: "Send Test Desktop Popup Alert Now"
@@ -1547,6 +1550,69 @@ Kirigami.ApplicationWindow {
                                     font.pointSize: root.smallPt
                                     onClicked: {
                                         if (controller) controller.sendTestAlert()
+                                    }
+                                }
+
+                                QQC2.Button {
+                                    text: "Configure KDE Application Notifications"
+                                    icon.name: "preferences-desktop-notification-bell"
+                                    font.pointSize: root.smallPt
+                                    onClicked: {
+                                        if (controller) controller.openKdeNotificationsSettings()
+                                    }
+                                }
+                            }
+                        }
+
+                        InfoCard {
+                            cardTitle: "KDE System Settings → Global Keyboard Shortcuts (kglobalaccel)"
+                            cardSubtitle: "15 global microphone, noise cancellation, and battery actions registered under 'KDE DJI Mic Mini Control' in KDE System Settings → Shortcuts"
+                            rightBadgeText: "15 SHORTCUTS"
+                            rightBadgeColor: root.okCol
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: "Bind global hotkeys anywhere on your KDE Plasma 6 desktop to control your DJI Mic Mini even when this window is minimized:"
+                                color: root.fgColor
+                                font.pointSize: root.smallPt
+                                wrapMode: Text.Wrap
+                            }
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: "• Window, Mute & Status: Toggle Control Window • Show Receiver & Transmitter Battery Notification • Toggle System Microphone Mute"
+                                color: root.mutedFg
+                                font.pointSize: root.captionPt
+                                wrapMode: Text.Wrap
+                            }
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: "• Noise Cancellation & AI DSP: Toggle Hardware Noise Cancellation On/Off • Set Hardware NC: Basic / Strong • Cycle AI Noise Cancellation Mode • Toggle PipeWire AI Denoised Virtual Mic • Start 3-Second AI Room Noise Learning"
+                                color: root.mutedFg
+                                font.pointSize: root.captionPt
+                                wrapMode: Text.Wrap
+                            }
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: "• Hardware Filters & LEDs: Toggle 150 Hz Low-Cut Filter • Toggle Hardware Auto Clip Limiter • Toggle Audio Track Mode (Mono / Stereo) • Toggle -6 dB Safety Backup Track • Toggle Transmitter Status LEDs"
+                                color: root.mutedFg
+                                font.pointSize: root.captionPt
+                                wrapMode: Text.Wrap
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                QQC2.Button {
+                                    text: "Open KDE System Settings → Shortcuts (kcmshell6 kcm_keys)"
+                                    icon.name: "configure-shortcuts"
+                                    font.pointSize: root.smallPt
+                                    font.bold: true
+                                    onClicked: {
+                                        if (controller) controller.openKdeShortcutsSettings()
                                     }
                                 }
                             }

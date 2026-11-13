@@ -342,11 +342,137 @@ fn log_event(st: &mut BackendState, msg: &str) {
     }
 }
 
-fn send_desktop_popup(st: &mut BackendState, title: &str, body: &str, urgency: &str) {
+pub const KDE_NOTIFYRC_COMPONENT: &str = "dji-mic-tray";
+
+pub const KDE_NOTIFYRC_CONTENT: &str = "\
+[Global]
+IconName=dji-mic-tray
+Comment=KDE DJI Mic Mini Control — System Tray Telemetry, Hardware Controller & Disconnection Alerts
+Name=KDE DJI Mic Mini Control
+DesktopEntry=dji-mic-tray
+
+[Event/rxDisconnected]
+Name=USB Receiver Disconnected Alert
+Comment=Triggered when the DJI Mic Mini USB-C Receiver (2ca3:4011) is unplugged or disconnected
+Action=Popup
+Urgency=Critical
+
+[Event/rxConnected]
+Name=USB Receiver Connected
+Comment=Triggered when the DJI Mic Mini USB-C Receiver connects on USB
+Action=Popup
+Urgency=Normal
+
+[Event/txDisconnected]
+Name=Wireless Transmitter Disconnected Alert
+Comment=Triggered when all wireless microphone transmitters (TX1/TX2) power off or lose link
+Action=Popup
+Urgency=Critical
+
+[Event/txConnected]
+Name=Wireless Transmitter Connected
+Comment=Triggered when a wireless microphone transmitter links with the receiver
+Action=Popup
+Urgency=Normal
+
+[Event/lowBattery]
+Name=Transmitter Low Battery Alert
+Comment=Triggered when TX1 or TX2 battery drops at or below the configured threshold
+Action=Popup
+Urgency=Critical
+
+[Event/micMuteChanged]
+Name=Microphone Mute & Hardware Setting Changed
+Comment=Triggered when microphone mute or hardware settings are toggled via global shortcut
+Action=Popup
+Urgency=Low
+
+[Event/noiseProfileLearned]
+Name=AI Room Noise Profile Learned
+Comment=Triggered when 3-second RNNoise + 4-band spectral room noise profiling finishes
+Action=Popup
+Urgency=Low
+
+[Event/telemetrySummary]
+Name=On-Demand Telemetry & Battery Summary
+Comment=Triggered by the Show Receiver & Transmitter Battery Notification global shortcut
+Action=Popup
+Urgency=Normal
+
+[Event/alertTest]
+Name=Manual Alert Test
+Comment=Triggered when testing desktop notifications from Settings or System Tray
+Action=Popup
+Urgency=Normal
+";
+
+pub fn ensure_kde_notifyrc_installed() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    let dir = PathBuf::from(&home).join(".local/share/knotifications6");
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join(format!("{KDE_NOTIFYRC_COMPONENT}.notifyrc"));
+    let needs_write = match fs::read_to_string(&path) {
+        Ok(existing) => existing != KDE_NOTIFYRC_CONTENT,
+        Err(_) => true,
+    };
+    if needs_write {
+        let _ = fs::write(&path, KDE_NOTIFYRC_CONTENT);
+    }
+}
+
+pub fn is_kde_notification_event_enabled(event_id: &str) -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    let cfg_path = PathBuf::from(home)
+        .join(".config")
+        .join(format!("{KDE_NOTIFYRC_COMPONENT}.notifyrc"));
+    let Ok(content) = fs::read_to_string(&cfg_path) else {
+        return true;
+    };
+    let target_header = format!("[Event/{event_id}]");
+    let mut in_section = false;
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line.eq_ignore_ascii_case(&target_header);
+            continue;
+        }
+        if in_section {
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("Action") {
+                    let val = v.trim();
+                    if val.is_empty() || val.eq_ignore_ascii_case("None") {
+                        return false;
+                    }
+                    return val
+                        .split('|')
+                        .chain(val.split(','))
+                        .any(|part| part.trim().eq_ignore_ascii_case("Popup"));
+                }
+            }
+        }
+    }
+    true
+}
+
+fn send_desktop_popup_event(
+    st: &mut BackendState,
+    event_id: &str,
+    title: &str,
+    body: &str,
+    urgency: &str,
+) {
     log_event(st, &format!("{}: {}", title, body));
-    if st.ui_test_mode {
+    if st.ui_test_mode || !is_kde_notification_event_enabled(event_id) {
         return;
     }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/millinr".to_string());
+    let icon_candidate =
+        PathBuf::from(&home).join(".local/share/icons/hicolor/256x256/apps/dji-mic-tray.png");
+    let icon_arg = if icon_candidate.exists() {
+        icon_candidate.to_string_lossy().to_string()
+    } else {
+        "audio-input-microphone".to_string()
+    };
     let _ = Command::new("notify-send")
         .args([
             "-u",
@@ -354,13 +480,40 @@ fn send_desktop_popup(st: &mut BackendState, title: &str, body: &str, urgency: &
             "-a",
             "KDE DJI Mic Mini Control",
             "-i",
-            "audio-input-microphone",
+            &icon_arg,
+            "-h",
+            &format!("string:desktop-entry:{KDE_NOTIFYRC_COMPONENT}"),
+            "-h",
+            &format!("string:x-kde-appname:{KDE_NOTIFYRC_COMPONENT}"),
+            "-h",
+            "string:x-kde-display-appname:KDE DJI Mic Mini Control",
+            "-h",
+            &format!("string:x-kde-eventId:{event_id}"),
             title,
             body,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+fn send_desktop_popup(st: &mut BackendState, title: &str, body: &str, urgency: &str) {
+    let event_id = if title.contains("Test") || title.contains("Status Popup") {
+        "alertTest"
+    } else if title.contains("Low Battery") {
+        "lowBattery"
+    } else if title.contains("Transmitter Disconnected") || title.contains("No Transmitter Linked") {
+        "txDisconnected"
+    } else if title.contains("Transmitter Connected") {
+        "txConnected"
+    } else if title.contains("Receiver Connected") {
+        "rxConnected"
+    } else if title.contains("Disconnected") {
+        "rxDisconnected"
+    } else {
+        "telemetrySummary"
+    };
+    send_desktop_popup_event(st, event_id, title, body, urgency);
 }
 
 pub fn build_full_snapshot_from(st: &BackendState) -> serde_json::Value {
@@ -743,7 +896,7 @@ fn start_socket_server() {
                         Err(e) => json!({"ok": false, "error": e}),
                     }
                 }
-                _ => json!({"error": format!("Unknown action: {}", act)}),
+                other => execute_shortcut_action(other),
             };
 
             if let Ok(out) = serde_json::to_vec(&resp) {
@@ -880,6 +1033,7 @@ pub extern "C" fn rust_init_backend(start_minimized: bool, ui_test_mode: bool) {
             aux_0474_hex: Some("04".to_string()),
         };
     } else {
+        ensure_kde_notifyrc_installed();
         start_socket_server();
         poll_tick_internal(true);
     }
@@ -1736,6 +1890,19 @@ pub extern "C" fn rust_learn_noise_profile() {
                     prof.recommended_hw_low_cut
                 ),
             );
+            send_desktop_popup_event(
+                &mut st,
+                "noiseProfileLearned",
+                "DJI Mic Mini — AI Room Noise Learned",
+                &format!(
+                    "{} (RNNoise -{:.1} dB • HW NC: {}, Low-Cut: {})",
+                    prof.noise_signature,
+                    prof.rnnoise_attenuation_db,
+                    prof.recommended_hw_nc_mode.to_uppercase(),
+                    prof.recommended_hw_low_cut.to_uppercase()
+                ),
+                "low",
+            );
         }
         emit_state_changed();
     });
@@ -2049,4 +2216,237 @@ pub extern "C" fn rust_quit_app() {
         }
     }
     let _ = fs::remove_file(socket_path());
+}
+
+pub fn execute_shortcut_action(action: &str) -> serde_json::Value {
+    match action {
+        "_launch" | "show" => {
+            {
+                let mut st = get_state().lock().unwrap();
+                st.window_visible = true;
+            }
+            emit_window_changed();
+            json!({"ok": true})
+        }
+        "ToggleWindow" | "toggle" => {
+            rust_toggle_window();
+            json!({"ok": true})
+        }
+        "ShowBatteryPopup" | "popup-status" => {
+            {
+                let mut st = get_state().lock().unwrap();
+                let rx_ok = st.usb_info.present && st.status.connected;
+                let tx_cnt = if rx_ok { st.status.tx_count() } else { 0 };
+                if !rx_ok {
+                    send_desktop_popup_event(
+                        &mut st,
+                        "telemetrySummary",
+                        "DJI Mic Mini — Receiver Disconnected",
+                        "The DJI Mic Mini USB-C Receiver (2ca3:4011) is not connected.",
+                        "normal",
+                    );
+                } else {
+                    let rx_sn = st
+                        .status
+                        .rx
+                        .as_ref()
+                        .and_then(|r| r.serial.as_deref())
+                        .unwrap_or("—")
+                        .to_string();
+                    let mut tx_parts = Vec::new();
+                    for t in st.status.tx.iter().flatten() {
+                        if t.connected {
+                            tx_parts.push(format!(
+                                "TX{}: {}% ({}/7)",
+                                t.unit,
+                                t.battery_percent.unwrap_or(100),
+                                t.battery.unwrap_or(1)
+                            ));
+                        }
+                    }
+                    let tx_str = if tx_parts.is_empty() {
+                        "No TX Linked".to_string()
+                    } else {
+                        tx_parts.join(" & ")
+                    };
+                    let nc_mode = st
+                        .status
+                        .settings
+                        .get("noise-cancel")
+                        .cloned()
+                        .unwrap_or_else(|| "basic".to_string())
+                        .to_uppercase();
+                    let muted = if st.alsa_vol.muted { "MUTED" } else { "LIVE" };
+                    let ai_mode = st.config.ai_nc_mode.to_uppercase();
+                    let title = format!("DJI Mic Mini — {} ({})", tx_str, muted);
+                    let body = format!(
+                        "RX S/N {} • Active TX: {}/2 • HW NC: {} • AI Mode: {}",
+                        rx_sn, tx_cnt, nc_mode, ai_mode
+                    );
+                    send_desktop_popup_event(&mut st, "telemetrySummary", &title, &body, "normal");
+                }
+            }
+            emit_state_changed();
+            json!({"ok": true})
+        }
+        "ToggleMicMute" | "toggle-mute" => {
+            let next_mute = {
+                let st = get_state().lock().unwrap();
+                !st.alsa_vol.muted
+            };
+            rust_set_system_mic_mute(next_mute);
+            {
+                let mut st = get_state().lock().unwrap();
+                st.last_action_message = format!(
+                    "System Microphone -> {}",
+                    if next_mute { "MUTED" } else { "UNMUTED" }
+                );
+                send_desktop_popup_event(
+                    &mut st,
+                    "micMuteChanged",
+                    &format!(
+                        "DJI Mic Mini — Microphone {}",
+                        if next_mute { "MUTED" } else { "UNMUTED" }
+                    ),
+                    &format!(
+                        "Linux PipeWire/ALSA capture is now {}.",
+                        if next_mute { "MUTED" } else { "LIVE (Unmuted)" }
+                    ),
+                    "low",
+                );
+            }
+            emit_state_changed();
+            json!({"ok": true, "muted": next_mute})
+        }
+        "ToggleNoiseCancel" | "toggle-nc" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("noise-cancel-power")
+                    .map(|s| s.as_str())
+                    .unwrap_or(if st.status.nc_enabled.unwrap_or(true) {
+                        "on"
+                    } else {
+                        "off"
+                    });
+                if cur == "on" { "off" } else { "on" }
+            };
+            let _ = apply_setting_sync("noise-cancel-power", next_val, None);
+            json!({"ok": true, "noise_cancel_power": next_val})
+        }
+        "NoiseCancelBasic" | "nc-basic" => {
+            let _ = apply_setting_sync("noise-cancel", "basic", None);
+            json!({"ok": true, "noise_cancel": "basic"})
+        }
+        "NoiseCancelStrong" | "nc-strong" => {
+            let _ = apply_setting_sync("noise-cancel", "strong", None);
+            json!({"ok": true, "noise_cancel": "strong"})
+        }
+        "CycleAiNoiseCancel" | "cycle-ai-nc" => {
+            let next_mode = {
+                let st = get_state().lock().unwrap();
+                let order = ["off", "hardware", "learned_ai", "adaptive"];
+                let idx = order
+                    .iter()
+                    .position(|m| *m == st.config.ai_nc_mode)
+                    .unwrap_or(2);
+                order[(idx + 1) % order.len()].to_string()
+            };
+            if let Ok(cs) = CString::new(next_mode.clone()) {
+                rust_set_ai_nc_mode(cs.as_ptr());
+            }
+            json!({"ok": true, "ai_nc_mode": next_mode})
+        }
+        "ToggleAiVirtualMic" | "toggle-virtual-mic" => {
+            let next_en = {
+                let st = get_state().lock().unwrap();
+                !st.config.ai_nc_virtual_mic
+            };
+            rust_set_ai_nc_virtual_mic(next_en);
+            json!({"ok": true, "ai_nc_virtual_mic": next_en})
+        }
+        "LearnRoomNoise" | "learn-noise" => {
+            rust_learn_noise_profile();
+            json!({"ok": true})
+        }
+        "ToggleLowCut" | "toggle-low-cut" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("low-cut")
+                    .map(|s| s.as_str())
+                    .unwrap_or("off");
+                if cur == "on" { "off" } else { "on" }
+            };
+            let _ = apply_setting_sync("low-cut", next_val, None);
+            json!({"ok": true, "low_cut": next_val})
+        }
+        "ToggleClipLimiter" | "toggle-limiter" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("clip-limiter")
+                    .map(|s| s.as_str())
+                    .unwrap_or("on");
+                if cur == "on" { "off" } else { "on" }
+            };
+            let _ = apply_setting_sync("clip-limiter", next_val, None);
+            json!({"ok": true, "clip_limiter": next_val})
+        }
+        "ToggleTrackMode" | "toggle-stereo" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("stereo")
+                    .map(|s| s.as_str())
+                    .unwrap_or("mono");
+                if cur == "stereo" { "mono" } else { "stereo" }
+            };
+            let _ = apply_setting_sync("stereo", next_val, None);
+            json!({"ok": true, "stereo": next_val})
+        }
+        "ToggleSafetyTrack" | "toggle-safety" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("safety-track")
+                    .map(|s| s.as_str())
+                    .unwrap_or("off");
+                if cur == "on" { "off" } else { "on" }
+            };
+            let _ = apply_setting_sync("safety-track", next_val, None);
+            json!({"ok": true, "safety_track": next_val})
+        }
+        "ToggleTransmitterLeds" | "toggle-leds" => {
+            let next_val = {
+                let st = get_state().lock().unwrap();
+                let cur = st
+                    .status
+                    .settings
+                    .get("mic-leds")
+                    .map(|s| s.as_str())
+                    .unwrap_or("on");
+                if cur == "on" { "off" } else { "on" }
+            };
+            let _ = apply_setting_sync("mic-leds", next_val, None);
+            json!({"ok": true, "mic_leds": next_val})
+        }
+        _ => json!({"error": format!("Unknown action: {}", action)}),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_handle_global_shortcut(shortcut_ptr: *const c_char) {
+    let shortcut = c_str_to_rust(shortcut_ptr);
+    let _ = execute_shortcut_action(&shortcut);
 }

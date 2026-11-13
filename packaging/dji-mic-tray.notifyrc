@@ -1,0 +1,59 @@
+[Global]
+IconName=dji-mic-tray
+Comment=KDE DJI Mic Mini Control — System Tray Telemetry, Hardware Controller & Disconnection Alerts
+Name=KDE DJI Mic Mini Control
+DesktopEntry=dji-mic-tray
+
+[Event/rxDisconnected]
+Name=USB Receiver Disconnected Alert
+Comment=Triggered when the DJI Mic Mini USB-C Receiver (2ca3:4011) is unplugged or disconnected
+Action=Popup
+Urgency=Critical
+
+[Event/rxConnected]
+Name=USB Receiver Connected
+Comment=Triggered when the DJI Mic Mini USB-C Receiver connects on USB
+Action=Popup
+Urgency=Normal
+
+[Event/txDisconnected]
+Name=Wireless Transmitter Disconnected Alert
+Comment=Triggered when all wireless microphone transmitters (TX1/TX2) power off or lose link
+Action=Popup
+Urgency=Critical
+
+[Event/txConnected]
+Name=Wireless Transmitter Connected
+Comment=Triggered when a wireless microphone transmitter links with the receiver
+Action=Popup
+Urgency=Normal
+
+[Event/lowBattery]
+Name=Transmitter Low Battery Alert
+Comment=Triggered when TX1 or TX2 battery drops at or below the configured threshold
+Action=Popup
+Urgency=Critical
+
+[Event/micMuteChanged]
+Name=Microphone Mute & Hardware Setting Changed
+Comment=Triggered when microphone mute or hardware settings are toggled via global shortcut
+Action=Popup
+Urgency=Low
+
+[Event/noiseProfileLearned]
+Name=AI Room Noise Profile Learned
+Comment=Triggered when 3-second RNNoise + 4-band spectral room noise profiling finishes
+Action=Popup
+Urgency=Low
+
+[Event/telemetrySummary]
+Name=On-Demand Telemetry & Battery Summary
+Comment=Triggered by the Show Receiver & Transmitter Battery Notification global shortcut
+Action=Popup
+Urgency=Normal
+
+[Event/alertTest]
+Name=Manual Alert Test
+Comment=Triggered when testing desktop notifications from Settings or System Tray
+Action=Popup
+Urgency=Normal

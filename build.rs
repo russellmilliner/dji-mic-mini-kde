@@ -29,7 +29,7 @@ fn main() {
         panic!("Failed to run Qt6 moc on src/cpp/qt_bridge.h");
     }
 
-    let qt_modules = ["Qt6Widgets", "Qt6Quick", "Qt6Qml", "Qt6Gui", "Qt6Core"];
+    let qt_modules = ["Qt6Widgets", "Qt6Quick", "Qt6Qml", "Qt6Gui", "Qt6DBus", "Qt6Core"];
     let mut build = cc::Build::new();
     build
         .cpp(true)

@@ -1,0 +1,69 @@
+[Desktop Entry]
+Type=Application
+Name=KDE DJI Mic Mini Control
+GenericName=DJI Mic Mini System Tray & Hardware Controller
+Comment=KDE Plasma 6 System Tray, Telemetry Studio, and Hardware Settings Controller for DJI Mic Mini (Rust)
+Exec=dji-mic-tray --show
+Icon=dji-mic-tray
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;Utility;Qt;KDE;
+Keywords=DJI;Mic;Mini;Microphone;Wireless;Audio;PipeWire;USB;DUML;
+StartupWMClass=dji-mic-tray
+X-KDE-UniqueApplet=true
+Actions=ToggleWindow;ShowBatteryPopup;ToggleMicMute;ToggleNoiseCancel;NoiseCancelBasic;NoiseCancelStrong;CycleAiNoiseCancel;ToggleAiVirtualMic;LearnRoomNoise;ToggleLowCut;ToggleClipLimiter;ToggleTrackMode;ToggleSafetyTrack;ToggleTransmitterLeds;
+
+[Desktop Action ToggleWindow]
+Name=Toggle DJI Mic Mini Control Window
+Exec=dji-mic-tray --toggle
+
+[Desktop Action ShowBatteryPopup]
+Name=Show Receiver & Transmitter Battery Notification
+Exec=dji-mic-tray --popup-status
+
+[Desktop Action ToggleMicMute]
+Name=Toggle DJI Mic Mini System Microphone Mute
+Exec=dji-mic-tray --toggle-mute
+
+[Desktop Action ToggleNoiseCancel]
+Name=Toggle Hardware Noise Cancellation On/Off
+Exec=dji-mic-tray --toggle-nc
+
+[Desktop Action NoiseCancelBasic]
+Name=Set Hardware Noise Cancellation: Basic (Indoor)
+Exec=dji-mic-tray --nc-basic
+
+[Desktop Action NoiseCancelStrong]
+Name=Set Hardware Noise Cancellation: Strong (Noisy)
+Exec=dji-mic-tray --nc-strong
+
+[Desktop Action CycleAiNoiseCancel]
+Name=Cycle AI Noise Cancellation Mode (Off / HW / Learned AI / Adaptive)
+Exec=dji-mic-tray --cycle-ai-nc
+
+[Desktop Action ToggleAiVirtualMic]
+Name=Toggle PipeWire AI Denoised Virtual Microphone
+Exec=dji-mic-tray --toggle-virtual-mic
+
+[Desktop Action LearnRoomNoise]
+Name=Start 3-Second AI Room Noise Learning
+Exec=dji-mic-tray --learn-noise
+
+[Desktop Action ToggleLowCut]
+Name=Toggle 150 Hz Low-Cut Wind/Rumble Filter
+Exec=dji-mic-tray --toggle-low-cut
+
+[Desktop Action ToggleClipLimiter]
+Name=Toggle Hardware Auto Clip Limiter
+Exec=dji-mic-tray --toggle-limiter
+
+[Desktop Action ToggleTrackMode]
+Name=Toggle Audio Track Mode (Mono / Stereo)
+Exec=dji-mic-tray --toggle-stereo
+
+[Desktop Action ToggleSafetyTrack]
+Name=Toggle -6 dB Safety Backup Track
+Exec=dji-mic-tray --toggle-safety
+
+[Desktop Action ToggleTransmitterLeds]
+Name=Toggle Transmitter Status LEDs On/Off
+Exec=dji-mic-tray --toggle-leds

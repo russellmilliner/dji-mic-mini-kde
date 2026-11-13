@@ -272,6 +272,8 @@ public:
     Q_INVOKABLE void setAlertOnLowBattery(bool enabled);
     Q_INVOKABLE void setLowBatteryThresholdPct(int val);
     Q_INVOKABLE void sendTestAlert();
+    Q_INVOKABLE void openKdeShortcutsSettings();
+    Q_INVOKABLE void openKdeNotificationsSettings();
     Q_INVOKABLE void setColorScheme(const QString& scheme);
     Q_INVOKABLE void setUiZoomPercent(int pct);
     Q_INVOKABLE void zoomIn();
@@ -281,11 +283,15 @@ public:
 
     void setupTray();
     void updateTrayUi(bool force = false);
+    void registerKdeGlobalShortcuts();
 
 signals:
     void stateChanged();
     void windowChanged();
     void configChanged();
+
+private slots:
+    void onGlobalShortcutPressed(const QString& componentUnique, const QString& shortcutUnique, qlonglong timestamp);
 
 private:
     bool m_uiTestMode = false;

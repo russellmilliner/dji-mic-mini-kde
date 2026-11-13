@@ -19,6 +19,12 @@
 #include <QUrl>
 #include <QKeyEvent>
 #include <QWheelEvent>
+#include <QProcess>
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusMessage>
+#include <QDBusMetaType>
+#include <QDBusReply>
 
 #include <KStatusNotifierItem>
 
@@ -59,6 +65,7 @@ extern "C" {
     void rust_set_color_scheme(const char* scheme);
     void rust_set_ui_zoom_percent(int pct);
     void rust_quit_app();
+    void rust_handle_global_shortcut(const char* shortcut);
 }
 
 static DjiMicController* g_controller = nullptr;
@@ -235,6 +242,7 @@ DjiMicController::DjiMicController(bool startMinimized, bool uiTestMode, const Q
     if (!m_uiTestMode) {
         ensureTaskManagerIconFiles(m_appDir);
         setupTray();
+        registerKdeGlobalShortcuts();
         m_pollTimer = new QTimer(this);
         m_pollTimer->setInterval(250);
         connect(m_pollTimer, &QTimer::timeout, this, []() {
@@ -405,6 +413,14 @@ void DjiMicController::setAlertOnTxDisconnect(bool enabled) { rust_set_alert_on_
 void DjiMicController::setAlertOnLowBattery(bool enabled) { rust_set_alert_on_low_battery(enabled); }
 void DjiMicController::setLowBatteryThresholdPct(int val) { rust_set_low_battery_threshold_pct(val); }
 void DjiMicController::sendTestAlert() { rust_send_test_alert(); }
+void DjiMicController::openKdeShortcutsSettings() {
+    QProcess::startDetached(QStringLiteral("kcmshell6"), {QStringLiteral("kcm_keys")}) ||
+        QProcess::startDetached(QStringLiteral("systemsettings"), {QStringLiteral("kcm_keys")});
+}
+void DjiMicController::openKdeNotificationsSettings() {
+    QProcess::startDetached(QStringLiteral("kcmshell6"), {QStringLiteral("kcm_notifications")}) ||
+        QProcess::startDetached(QStringLiteral("systemsettings"), {QStringLiteral("kcm_notifications")});
+}
 void DjiMicController::setColorScheme(const QString& scheme) { rust_set_color_scheme(scheme.toUtf8().constData()); }
 void DjiMicController::setUiZoomPercent(int pct) { rust_set_ui_zoom_percent(pct); }
 void DjiMicController::zoomIn() { setUiZoomPercent(uiZoomPercent() + 10); }
@@ -631,6 +647,106 @@ void DjiMicController::updateTrayUi(bool force) {
     m_trayMenu->addSeparator();
     QAction* quitAct = m_trayMenu->addAction(QStringLiteral("Quit KDE DJI Mic Mini Control"));
     connect(quitAct, &QAction::triggered, this, &DjiMicController::quitApp);
+}
+
+void DjiMicController::registerKdeGlobalShortcuts() {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) {
+        return;
+    }
+
+    // Notify KNotification daemon to re-parse ~/.local/share/knotifications6/dji-mic-tray.notifyrc
+    QDBusMessage notifySig = QDBusMessage::createSignal(
+        QStringLiteral("/Config"),
+        QStringLiteral("org.kde.knotification"),
+        QStringLiteral("reparseConfiguration")
+    );
+    notifySig << QStringLiteral("dji-mic-tray");
+    bus.send(notifySig);
+
+    QDBusInterface iface(
+        QStringLiteral("org.kde.kglobalaccel"),
+        QStringLiteral("/kglobalaccel"),
+        QStringLiteral("org.kde.KGlobalAccel"),
+        bus
+    );
+    if (!iface.isValid()) {
+        return;
+    }
+    qDBusRegisterMetaType<QList<int>>();
+
+    const QString componentUnique = QStringLiteral("dji-mic-tray.desktop");
+    const QString componentFriendly = QStringLiteral("KDE DJI Mic Mini Control");
+    const QString componentPath = QStringLiteral("/component/dji_mic_tray_desktop");
+
+    QStringList existingShortcuts;
+    QDBusInterface compIface(
+        QStringLiteral("org.kde.kglobalaccel"),
+        componentPath,
+        QStringLiteral("org.kde.kglobalaccel.Component"),
+        bus
+    );
+    if (compIface.isValid()) {
+        QDBusReply<QStringList> reply = compIface.call(QStringLiteral("shortcutNames"));
+        if (reply.isValid()) {
+            existingShortcuts = reply.value();
+        }
+    }
+
+    const QPair<QString, QString> actions[] = {
+        {QStringLiteral("_launch"), QStringLiteral("Launch / Show KDE DJI Mic Mini Control")},
+        {QStringLiteral("ToggleWindow"), QStringLiteral("Toggle DJI Mic Mini Control Window")},
+        {QStringLiteral("ShowBatteryPopup"), QStringLiteral("Show Receiver & Transmitter Battery Notification")},
+        {QStringLiteral("ToggleMicMute"), QStringLiteral("Toggle DJI Mic Mini System Microphone Mute")},
+        {QStringLiteral("ToggleNoiseCancel"), QStringLiteral("Toggle Hardware Noise Cancellation On/Off")},
+        {QStringLiteral("NoiseCancelBasic"), QStringLiteral("Set Hardware Noise Cancellation: Basic (Indoor)")},
+        {QStringLiteral("NoiseCancelStrong"), QStringLiteral("Set Hardware Noise Cancellation: Strong (Noisy)")},
+        {QStringLiteral("CycleAiNoiseCancel"), QStringLiteral("Cycle AI Noise Cancellation Mode (Off / HW / Learned AI / Adaptive)")},
+        {QStringLiteral("ToggleAiVirtualMic"), QStringLiteral("Toggle PipeWire AI Denoised Virtual Microphone")},
+        {QStringLiteral("LearnRoomNoise"), QStringLiteral("Start 3-Second AI Room Noise Learning")},
+        {QStringLiteral("ToggleLowCut"), QStringLiteral("Toggle 150 Hz Low-Cut Wind/Rumble Filter")},
+        {QStringLiteral("ToggleClipLimiter"), QStringLiteral("Toggle Hardware Auto Clip Limiter")},
+        {QStringLiteral("ToggleTrackMode"), QStringLiteral("Toggle Audio Track Mode (Mono / Stereo)")},
+        {QStringLiteral("ToggleSafetyTrack"), QStringLiteral("Toggle -6 dB Safety Backup Track")},
+        {QStringLiteral("ToggleTransmitterLeds"), QStringLiteral("Toggle Transmitter Status LEDs On/Off")},
+    };
+    const QList<int> emptyKeys;
+    for (const auto& act : actions) {
+        QStringList aid = {
+            componentUnique,
+            act.first,
+            componentFriendly,
+            act.second,
+        };
+        iface.call(QDBus::NoBlock, QStringLiteral("doRegister"), QVariant::fromValue(aid));
+        if (!existingShortcuts.contains(act.first)) {
+            QDBusMessage msg = QDBusMessage::createMethodCall(
+                QStringLiteral("org.kde.kglobalaccel"),
+                QStringLiteral("/kglobalaccel"),
+                QStringLiteral("org.kde.KGlobalAccel"),
+                QStringLiteral("setForeignShortcut")
+            );
+            msg << QVariant::fromValue(aid) << QVariant::fromValue(emptyKeys);
+            bus.call(msg, QDBus::NoBlock);
+        }
+    }
+
+    bus.connect(
+        QStringLiteral("org.kde.kglobalaccel"),
+        componentPath,
+        QStringLiteral("org.kde.kglobalaccel.Component"),
+        QStringLiteral("globalShortcutPressed"),
+        this,
+        SLOT(onGlobalShortcutPressed(QString,QString,qlonglong))
+    );
+}
+
+void DjiMicController::onGlobalShortcutPressed(
+    const QString& /*componentUnique*/,
+    const QString& shortcutUnique,
+    qlonglong /*timestamp*/
+) {
+    rust_handle_global_shortcut(shortcutUnique.toUtf8().constData());
 }
 
 PloopyAndZoomEventFilter::PloopyAndZoomEventFilter(DjiMicController* controller)

@@ -99,6 +99,30 @@ fn main() {
             }
         }
 
+        let shortcut_flags = [
+            ("--popup-status", "popup-status"),
+            ("--toggle-mute", "toggle-mute"),
+            ("--toggle-nc", "toggle-nc"),
+            ("--nc-basic", "nc-basic"),
+            ("--nc-strong", "nc-strong"),
+            ("--cycle-ai-nc", "cycle-ai-nc"),
+            ("--toggle-virtual-mic", "toggle-virtual-mic"),
+            ("--learn-noise", "learn-noise"),
+            ("--toggle-low-cut", "toggle-low-cut"),
+            ("--toggle-limiter", "toggle-limiter"),
+            ("--toggle-stereo", "toggle-stereo"),
+            ("--toggle-safety", "toggle-safety"),
+            ("--toggle-leds", "toggle-leds"),
+        ];
+        for (flag, act) in shortcut_flags {
+            if args.iter().any(|a| a == flag) {
+                if send_socket_command(&json!({"action": act})).is_some() {
+                    std::process::exit(0);
+                }
+                std::process::exit(0);
+            }
+        }
+
         if send_socket_command(&json!({"action": "status"})).is_some() {
             if !minimized {
                 let _ = send_socket_command(&json!({"action": "show"}));
