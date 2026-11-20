@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.russellmilliner.DjiMicMiniControl</id>
   <name>KDE DJI Mic Mini Control</name>
-  <summary>KDE Plasma 6 System Tray, DUML USB Telemetry, Hardware Controller &amp; Desktop Alert Daemon for DJI Mic Mini</summary>
+  <summary>KDE Plasma 6 system tray, USB telemetry &amp; controller for DJI Mic Mini</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <developer id="io.github.russellmilliner">
@@ -22,6 +22,21 @@
   <url type="donation">https://ko-fi.com/russellmilliner</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.5" date="2026-11-19">
+      <description>
+        <p>Security hardening (0660 udev + hidraw, Polkit udev installation without sudo on user binaries, strict CRC-16 frame validation, unsafe FFI catch_unwind/QPointer guards, atomic 0600 config writes, explicit subprocess timeouts), major performance optimizations (dedicated background USB/PipeWire worker thread, single-shot JSON snapshot FFI, granular Qt signals, cached tray pixmap rendering, PipeWire pw-record room noise profiling), and modular Rust/QML architecture with native KColorSchemeManager theming.</p>
+      </description>
+    </release>
+    <release version="0.2.4" date="2026-11-13">
+      <description>
+        <p>Added KNotifications 6 integration (.notifyrc) and 15 KDE global keyboard shortcuts via kglobalaccel.</p>
+      </description>
+    </release>
+    <release version="0.2.3" date="2026-11-06">
+      <description>
+        <p>Added Start on Login and Start Minimized to System Tray settings.</p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-11-06">
       <description>
         <p>Added dynamic application version readout in the window title bar and header, and enclosed all tab views in a unified bordered content box directly attached to the KDE Plasma QQC2.TabBar.</p>

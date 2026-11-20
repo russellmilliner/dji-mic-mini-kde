@@ -1,36 +1,22 @@
 use dji_mic_mini_kde::audio::{
-    get_alsa_card_info, get_alsa_volume, get_pipewire_stream_details, set_alsa_mute,
-    set_alsa_volume, toggle_alsa_mute,
+    get_alsa_card_info, get_alsa_volume, get_pipewire_stream_details, is_valid_volume_spec,
+    set_alsa_mute, set_alsa_volume, toggle_alsa_mute,
 };
-use dji_mic_mini_kde::controller::socket_path;
 use dji_mic_mini_kde::device::{
     check_udev_status, get_usb_sysfs_info, install_udev_rule_as_root, query_hid_service_info,
-    DjiMicDevice, UDEV_INSTALL_ONELINER, UDEV_RULE_CONTENT, UDEV_RULE_PATH,
+    DjiMicDevice, RawCommandRequest, UDEV_INSTALL_ONELINER, UDEV_RULE_CONTENT, UDEV_RULE_PATH,
 };
-use dji_mic_mini_kde::protocol::{find_setting_spec, hex_encode, DeviceStatus, SETTINGS_SPEC};
+use dji_mic_mini_kde::protocol::{
+    find_setting_spec, hex_encode, DeviceStatus, DumlDialect, SETTINGS_SPEC,
+};
+use dji_mic_mini_kde::util::send_ipc_request;
 use serde_json::json;
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
 
 fn query_tray_socket(req: &serde_json::Value) -> Option<serde_json::Value> {
-    let sp = socket_path();
-    if !sp.exists() {
-        return None;
-    }
-    let mut stream = UnixStream::connect(&sp).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(1200)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(1200)))
-        .ok()?;
-    let payload = format!("{}\n", serde_json::to_string(req).ok()?);
-    stream.write_all(payload.as_bytes()).ok()?;
-    let mut resp = Vec::new();
-    stream.read_to_end(&mut resp).ok()?;
-    serde_json::from_slice(&resp).ok()
+    send_ipc_request(req, Duration::from_millis(1500))
 }
 
 fn build_direct_snapshot() -> serde_json::Value {
@@ -266,13 +252,41 @@ fn print_human_status(snap: &serde_json::Value) {
 fn print_usage() {
     println!("Usage: dji-mic <command> [options]");
     println!("Commands:");
-    println!("  status [--json]                     Show complete hardware, battery, VU & audio status");
-    println!("  watch [--interval SEC] [--json]     Continuously stream live telemetry");
-    println!("  set <setting> [value] [--tx 1|2]    Change a verified DJI Mic Mini hardware setting");
-    println!("  mute [on|off|toggle]                Mute or unmute Linux ALSA/PipeWire capture");
-    println!("  volume [0-100%|+5%|-5%]             Get or set Linux ALSA capture volume");
-    println!("  udev [--check|--print-rule|--install] Check or install /etc/udev/rules.d/99-dji-mic.rules");
-    println!("  raw --cmd-id HEX [--cmd-set HEX] [--payload HEX] Send raw DUML frame");
+    println!("  status [--json]                        Show complete hardware, battery, VU & audio status");
+    println!("  watch [--interval SEC] [--json]        Continuously stream live telemetry");
+    println!("  set <setting> [value] [--tx 1|2]       Change a verified DJI Mic Mini hardware setting");
+    println!("  mute [on|off|toggle]                   Mute or unmute Linux ALSA/PipeWire capture");
+    println!("  volume [0-100%|+5%|-5%]                Get or set Linux ALSA capture volume");
+    println!("  udev [--check|--print-rule|--install]  Check or install /etc/udev/rules.d/99-dji-mic.rules");
+    println!("  raw --cmd-id HEX [--cmd-set HEX] [--payload HEX] [--dialect v1|v2] Send raw DUML frame");
+}
+
+fn parse_hex_u8(flag: &str, raw: &str) -> Result<u8, String> {
+    let trimmed = raw
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| raw.trim().strip_prefix("0X"))
+        .unwrap_or(raw.trim());
+    u8::from_str_radix(trimmed, 16)
+        .map_err(|_| format!("Invalid hexadecimal byte '{raw}' for {flag}"))
+}
+
+fn parse_hex_payload(raw: &str) -> Result<Vec<u8>, String> {
+    let clean: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+    if !clean.len().is_multiple_of(2) {
+        return Err(format!(
+            "Hex payload must have an even number of nibbles (got {} chars)",
+            clean.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(clean.len() / 2);
+    for chunk in clean.as_bytes().as_chunks::<2>().0 {
+        let hex_pair = std::str::from_utf8(chunk).map_err(|_| "Invalid UTF-8 in payload")?;
+        let byte = u8::from_str_radix(hex_pair, 16)
+            .map_err(|_| format!("Invalid hex byte '{hex_pair}' in --payload"))?;
+        out.push(byte);
+    }
+    Ok(out)
 }
 
 fn main() {
@@ -311,8 +325,7 @@ fn main() {
                 std::process::exit(1);
             }
             loop {
-                let deadline =
-                    Instant::now() + Duration::from_secs_f64(interval);
+                let deadline = Instant::now() + Duration::from_secs_f64(interval);
                 while Instant::now() < deadline {
                     if dev.poll_frames(40).is_err() {
                         break;
@@ -420,14 +433,23 @@ fn main() {
             let res = match state {
                 "toggle" => toggle_alsa_mute(),
                 "on" => {
-                    set_alsa_mute(true);
-                    Some(true)
+                    if set_alsa_mute(true) {
+                        Some(true)
+                    } else {
+                        None
+                    }
                 }
                 "off" => {
-                    set_alsa_mute(false);
-                    Some(false)
+                    if set_alsa_mute(false) {
+                        Some(false)
+                    } else {
+                        None
+                    }
                 }
-                _ => None,
+                other => {
+                    eprintln!("Invalid mute state '{other}' (expected on, off, or toggle)");
+                    std::process::exit(1);
+                }
             };
             if let Some(m) = res {
                 println!(
@@ -435,12 +457,18 @@ fn main() {
                     if m { "MUTED" } else { "UNMUTED" }
                 );
             } else {
-                eprintln!("DJI Mic Mini ALSA card not found.");
+                eprintln!("DJI Mic Mini ALSA/PipeWire capture device not found or update failed.");
                 std::process::exit(1);
             }
         }
         "volume" => {
             if let Some(level) = args.get(1) {
+                if !is_valid_volume_spec(level) {
+                    eprintln!(
+                        "Invalid volume specification '{level}' (expected 0-100%, +5%, or -5%)"
+                    );
+                    std::process::exit(1);
+                }
                 if !set_alsa_volume(level) {
                     eprintln!("Failed to set volume to {}", level);
                     std::process::exit(1);
@@ -480,7 +508,7 @@ fn main() {
                 println!(
                     "Rule Installed  : {}",
                     if st.rule_installed && st.rule_content_valid {
-                        "YES"
+                        "YES (0660 + uaccess)"
                     } else {
                         "NO"
                     }
@@ -505,7 +533,7 @@ fn main() {
                 );
                 println!("Summary         : {}", st.summary);
                 if !st.ready {
-                    println!("\nTo install the udev rule, run:");
+                    println!("\nTo install/upgrade the udev rule, run:");
                     println!("  sudo dji-mic udev --install");
                     println!("Or:");
                     println!("  {}", UDEV_INSTALL_ONELINER);
@@ -516,41 +544,54 @@ fn main() {
             let mut cmd_set = 0x5Bu8;
             let mut cmd_id = 0x01u8;
             let mut payload = Vec::new();
-            let mut dialect: Option<String> = None;
+            let mut dialect: Option<DumlDialect> = None;
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
                     "--cmd-set" if i + 1 < args.len() => {
-                        let s = args[i + 1].trim_start_matches("0x");
-                        cmd_set = u8::from_str_radix(s, 16).unwrap_or(0x5B);
+                        match parse_hex_u8("--cmd-set", &args[i + 1]) {
+                            Ok(v) => cmd_set = v,
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            }
+                        }
                         i += 2;
                     }
                     "--cmd-id" if i + 1 < args.len() => {
-                        let s = args[i + 1].trim_start_matches("0x");
-                        cmd_id = u8::from_str_radix(s, 16).unwrap_or(0x01);
+                        match parse_hex_u8("--cmd-id", &args[i + 1]) {
+                            Ok(v) => cmd_id = v,
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            }
+                        }
                         i += 2;
                     }
                     "--payload" if i + 1 < args.len() => {
-                        let clean: String = args[i + 1]
-                            .chars()
-                            .filter(|c| !c.is_whitespace())
-                            .collect();
-                        for chunk in clean.as_bytes().chunks(2) {
-                            if chunk.len() == 2 {
-                                if let Ok(b) =
-                                    u8::from_str_radix(&String::from_utf8_lossy(chunk), 16)
-                                {
-                                    payload.push(b);
-                                }
+                        match parse_hex_payload(&args[i + 1]) {
+                            Ok(bytes) => payload = bytes,
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
                             }
                         }
                         i += 2;
                     }
                     "--dialect" if i + 1 < args.len() => {
-                        dialect = Some(args[i + 1].clone());
+                        match DumlDialect::from_str(&args[i + 1]) {
+                            Ok(d) => dialect = Some(d),
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            }
+                        }
                         i += 2;
                     }
-                    _ => i += 1,
+                    other => {
+                        eprintln!("Unknown argument '{other}' for raw command");
+                        std::process::exit(1);
+                    }
                 }
             }
             let mut dev = DjiMicDevice::new();
@@ -558,16 +599,17 @@ fn main() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-            let _ = thread::sleep(Duration::from_millis(10));
-            match dev.send_raw_command(
+            thread::sleep(Duration::from_millis(10));
+            let req = RawCommandRequest {
                 cmd_set,
                 cmd_id,
-                &payload,
-                dialect.as_deref(),
-                0x02,
-                0x5A,
-                0x40,
-            ) {
+                payload: &payload,
+                dialect,
+                sender: 0x02,
+                receiver: 0x5A,
+                pack_type: 0x40,
+            };
+            match dev.send_raw_command(&req) {
                 Ok(replies) => {
                     for f in replies {
                         println!(

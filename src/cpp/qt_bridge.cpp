@@ -12,6 +12,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QModelIndex>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -20,6 +23,7 @@
 #include <QKeyEvent>
 #include <QWheelEvent>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusMessage>
@@ -27,17 +31,29 @@
 #include <QDBusReply>
 
 #include <KStatusNotifierItem>
+#include <KColorSchemeManager>
 
+#include <atomic>
 #include <cstdio>
 
 extern "C" {
+    typedef void (*VoidCallback)();
+    typedef void (*NotifyCallback)(const char* event_id, const char* title, const char* body, const char* icon, int urgency);
+    typedef void (*StrCallback)(const char* val);
+
     void rust_free_str(char* ptr);
-    void rust_register_callbacks(void (*on_state)(), void (*on_window)(), void (*on_config)());
+    void rust_register_callbacks(
+        VoidCallback on_state,
+        VoidCallback on_tray,
+        VoidCallback on_window,
+        VoidCallback on_config,
+        NotifyCallback on_notify,
+        StrCallback on_color_scheme
+    );
     void rust_init_backend(bool start_minimized, bool ui_test_mode);
-    void rust_poll_tick();
-    bool rust_get_bool(const char* key);
-    int rust_get_int(const char* key);
-    char* rust_get_str(const char* key);
+    char* rust_get_ui_snapshot_json();
+    char* rust_get_udev_oneliner();
+    char* rust_get_full_snapshot_json();
 
     void rust_set_window_visible(bool vis);
     void rust_toggle_window();
@@ -68,10 +84,9 @@ extern "C" {
     void rust_handle_global_shortcut(const char* shortcut);
 }
 
-static DjiMicController* g_controller = nullptr;
+static std::atomic<DjiMicController*> g_controller{nullptr};
 
-static QString rStr(const char* key) {
-    char* raw = rust_get_str(key);
+static QString takeRustStr(char* raw) {
     if (!raw) return QString();
     QString out = QString::fromUtf8(raw);
     rust_free_str(raw);
@@ -79,20 +94,32 @@ static QString rStr(const char* key) {
 }
 
 static void onRustStateChanged() {
-    if (!g_controller) return;
-    QMetaObject::invokeMethod(g_controller, []() {
-        if (!g_controller) return;
-        g_controller->updateTrayUi(false);
-        emit g_controller->stateChanged();
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QMetaObject::invokeMethod(ctrl, [ctrl]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->syncSnapshot(false);
+    }, Qt::QueuedConnection);
+}
+
+static void onRustTrayChanged() {
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QMetaObject::invokeMethod(ctrl, [ctrl]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->syncSnapshot(false);
+        ctrl->updateTrayUi(false);
     }, Qt::QueuedConnection);
 }
 
 static void onRustWindowChanged() {
-    if (!g_controller) return;
-    QMetaObject::invokeMethod(g_controller, []() {
-        if (!g_controller) return;
-        emit g_controller->windowChanged();
-        if (g_controller->windowVisible()) {
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QMetaObject::invokeMethod(ctrl, [ctrl]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->syncSnapshot(false);
+        ctrl->updateTrayUi(false);
+        if (ctrl->windowVisible()) {
             for (QWindow* w : QGuiApplication::topLevelWindows()) {
                 if (w->objectName() == QStringLiteral("mainWindow")) {
                     w->showNormal();
@@ -107,11 +134,35 @@ static void onRustWindowChanged() {
 }
 
 static void onRustConfigChanged() {
-    if (!g_controller) return;
-    QMetaObject::invokeMethod(g_controller, []() {
-        if (!g_controller) return;
-        g_controller->updateTrayUi(true);
-        emit g_controller->configChanged();
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QMetaObject::invokeMethod(ctrl, [ctrl]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->syncSnapshot(false);
+        ctrl->updateTrayUi(true);
+    }, Qt::QueuedConnection);
+}
+
+static void onRustColorScheme(const char* schemeCStr) {
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QString scheme = schemeCStr ? QString::fromUtf8(schemeCStr) : QStringLiteral("system");
+    QMetaObject::invokeMethod(ctrl, [ctrl, scheme]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->applyNativeColorScheme(scheme);
+    }, Qt::QueuedConnection);
+}
+
+static void onRustNotify(const char* eventIdCStr, const char* titleCStr, const char* bodyCStr, const char* iconCStr, int urgency) {
+    DjiMicController* ctrl = g_controller.load();
+    if (!ctrl) return;
+    QString eventId = eventIdCStr ? QString::fromUtf8(eventIdCStr) : QStringLiteral("telemetrySummary");
+    QString title = titleCStr ? QString::fromUtf8(titleCStr) : QString();
+    QString body = bodyCStr ? QString::fromUtf8(bodyCStr) : QString();
+    QString icon = iconCStr ? QString::fromUtf8(iconCStr) : QStringLiteral("audio-input-microphone");
+    QMetaObject::invokeMethod(ctrl, [ctrl, eventId, title, body, icon, urgency]() {
+        if (g_controller.load() != ctrl) return;
+        ctrl->sendDesktopNotificationDBus(eventId, title, body, icon, urgency);
     }, Qt::QueuedConnection);
 }
 
@@ -218,38 +269,48 @@ static void ensureTaskManagerIconFiles(const QString& appDir) {
     QPixmap pix64 = renderDjiMicPixmap(true, 1, 100, 45, false, 64);
     QPixmap pix256 = renderDjiMicPixmap(true, 1, 100, 45, false, 256);
 
-    QString home = QDir::homePath();
-    QString assetDir = appDir + QStringLiteral("/assets");
-    QString hi256 = home + QStringLiteral("/.local/share/icons/hicolor/256x256/apps/dji-mic-tray.png");
-    QString hi64 = home + QStringLiteral("/.local/share/icons/hicolor/64x64/apps/dji-mic-tray.png");
+    QString dataHome = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (dataHome.isEmpty()) {
+        dataHome = QDir::homePath() + QStringLiteral("/.local/share");
+    }
+    QString hi256 = dataHome + QStringLiteral("/icons/hicolor/256x256/apps/dji-mic-tray.png");
+    QString hi64 = dataHome + QStringLiteral("/icons/hicolor/64x64/apps/dji-mic-tray.png");
 
     QDir().mkpath(QFileInfo(hi256).absolutePath());
     QDir().mkpath(QFileInfo(hi64).absolutePath());
-
-    if (QDir(assetDir).exists()) {
-        pix256.save(assetDir + QStringLiteral("/dji-mic-tray.png"), "PNG");
-    }
     pix256.save(hi256, "PNG");
     pix64.save(hi64, "PNG");
+
+    QString assetDir = appDir + QStringLiteral("/assets");
+    QFileInfo assetInfo(assetDir);
+    if (assetInfo.isDir() && assetInfo.isWritable()) {
+        pix256.save(assetDir + QStringLiteral("/dji-mic-tray.png"), "PNG");
+    }
 }
 
 DjiMicController::DjiMicController(bool startMinimized, bool uiTestMode, const QString& appDir, QObject* parent)
     : QObject(parent), m_uiTestMode(uiTestMode), m_appDir(appDir) {
-    g_controller = this;
-    rust_register_callbacks(onRustStateChanged, onRustWindowChanged, onRustConfigChanged);
+    g_controller.store(this);
+    rust_register_callbacks(
+        onRustStateChanged,
+        onRustTrayChanged,
+        onRustWindowChanged,
+        onRustConfigChanged,
+        onRustNotify,
+        onRustColorScheme
+    );
     rust_init_backend(startMinimized, uiTestMode);
+    syncSnapshot(true);
+    applyNativeColorScheme(m_colorScheme);
 
     if (!m_uiTestMode) {
-        ensureTaskManagerIconFiles(m_appDir);
         setupTray();
         registerKdeGlobalShortcuts();
-        m_pollTimer = new QTimer(this);
-        m_pollTimer->setInterval(250);
-        connect(m_pollTimer, &QTimer::timeout, this, []() {
-            rust_poll_tick();
-        });
-        m_pollTimer->start();
     }
+}
+
+DjiMicController::~DjiMicController() {
+    g_controller.store(nullptr);
 }
 
 QString DjiMicController::appIconUrl() const {
@@ -260,116 +321,208 @@ QString DjiMicController::appIconUrl() const {
     return QStringLiteral("audio-input-microphone");
 }
 
-bool DjiMicController::deviceInUse() const { return rust_get_bool("deviceInUse"); }
-bool DjiMicController::windowVisible() const { return rust_get_bool("windowVisible"); }
-bool DjiMicController::quitting() const { return rust_get_bool("quitting"); }
-int DjiMicController::activeTabIndex() const { return rust_get_int("activeTabIndex"); }
-int DjiMicController::uiZoomPercent() const { return rust_get_int("uiZoomPercent"); }
-QString DjiMicController::colorScheme() const { return rStr("colorScheme"); }
-bool DjiMicController::startOnLogin() const { return rust_get_bool("startOnLogin"); }
-bool DjiMicController::startMinimized() const { return rust_get_bool("startMinimized"); }
-bool DjiMicController::alertOnRxDisconnect() const { return rust_get_bool("alertOnRxDisconnect"); }
-bool DjiMicController::alertOnTxDisconnect() const { return rust_get_bool("alertOnTxDisconnect"); }
-bool DjiMicController::alertOnLowBattery() const { return rust_get_bool("alertOnLowBattery"); }
-int DjiMicController::lowBatteryThresholdPct() const { return rust_get_int("lowBatteryThresholdPct"); }
+template <typename T>
+static bool assignIfChanged(T& member, const T& val, bool& groupDirty) {
+    if (member != val) {
+        member = val;
+        groupDirty = true;
+        return true;
+    }
+    return false;
+}
 
-bool DjiMicController::udevReady() const { return rust_get_bool("udevReady"); }
-QString DjiMicController::udevSummary() const { return rStr("udevSummary"); }
-QString DjiMicController::udevRuleFileStatus() const { return rStr("udevRuleFileStatus"); }
-QString DjiMicController::udevDeviceAccessStatus() const { return rStr("udevDeviceAccessStatus"); }
+static bool syncTxSlot(TxSlotCache& slot, const QJsonObject& obj, bool& dirty) {
+    bool changed = false;
+    changed |= assignIfChanged(slot.connected, obj.value(QStringLiteral("connected")).toBool(), dirty);
+    changed |= assignIfChanged(slot.batteryPct, obj.value(QStringLiteral("batteryPct")).toInt(), dirty);
+    changed |= assignIfChanged(slot.batteryCode, obj.value(QStringLiteral("batteryCode")).toInt(), dirty);
+    changed |= assignIfChanged(slot.charging, obj.value(QStringLiteral("charging")).toBool(), dirty);
+    changed |= assignIfChanged(slot.vuLevel, obj.value(QStringLiteral("vuLevel")).toInt(), dirty);
+    changed |= assignIfChanged(slot.serial, obj.value(QStringLiteral("serial")).toString(QStringLiteral("—")), dirty);
+    changed |= assignIfChanged(slot.firmware, obj.value(QStringLiteral("firmware")).toString(QStringLiteral("—")), dirty);
+    changed |= assignIfChanged(slot.product, obj.value(QStringLiteral("product")).toString(), dirty);
+    changed |= assignIfChanged(slot.tone, obj.value(QStringLiteral("tone")).toString(QStringLiteral("standard")), dirty);
+    changed |= assignIfChanged(slot.ncSummary, obj.value(QStringLiteral("ncSummary")).toString(QStringLiteral("—")), dirty);
+    changed |= assignIfChanged(slot.rawFlags, obj.value(QStringLiteral("rawFlags")).toString(QStringLiteral("—")), dirty);
+    return changed;
+}
 
-bool DjiMicController::usbPresent() const { return rust_get_bool("usbPresent"); }
-bool DjiMicController::rxConnected() const { return rust_get_bool("rxConnected"); }
-int DjiMicController::txConnectedCount() const { return rust_get_int("txConnectedCount"); }
-QString DjiMicController::overallStatusState() const { return rStr("overallStatusState"); }
-QString DjiMicController::overallStatusBadge() const { return rStr("overallStatusBadge"); }
-QString DjiMicController::headerSubtitle() const { return rStr("headerSubtitle"); }
-QString DjiMicController::protocolDialect() const { return rStr("protocolDialect"); }
-int DjiMicController::lastSequence() const { return rust_get_int("lastSequence"); }
-int DjiMicController::heartbeatCount() const { return rust_get_int("heartbeatCount"); }
-QString DjiMicController::rxHardwareModel() const { return rStr("rxHardwareModel"); }
-QString DjiMicController::rxSerial() const { return rStr("rxSerial"); }
-QString DjiMicController::rxFirmware() const { return rStr("rxFirmware"); }
-QString DjiMicController::rxFirmwareAndRev() const { return rStr("rxFirmwareAndRev"); }
-QString DjiMicController::rxGainSummary() const { return rStr("rxGainSummary"); }
-QString DjiMicController::rxSubtitle() const { return rStr("rxSubtitle"); }
+void DjiMicController::syncSnapshot(bool forceAll) {
+    QString jsonStr = takeRustStr(rust_get_ui_snapshot_json());
+    if (jsonStr.isEmpty()) return;
 
-bool DjiMicController::tx1Connected() const { return rust_get_bool("tx1Connected"); }
-int DjiMicController::tx1BatteryPct() const { return rust_get_int("tx1BatteryPct"); }
-int DjiMicController::tx1BatteryCode() const { return rust_get_int("tx1BatteryCode"); }
-bool DjiMicController::tx1Charging() const { return rust_get_bool("tx1Charging"); }
-int DjiMicController::tx1VuLevel() const { return rust_get_int("tx1VuLevel"); }
-QString DjiMicController::tx1Serial() const { return rStr("tx1Serial"); }
-QString DjiMicController::tx1Firmware() const { return rStr("tx1Firmware"); }
-QString DjiMicController::tx1Product() const { return rStr("tx1Product"); }
-QString DjiMicController::tx1Tone() const { return rStr("tx1Tone"); }
-QString DjiMicController::tx1NcSummary() const { return rStr("tx1NcSummary"); }
-QString DjiMicController::tx1RawFlags() const { return rStr("tx1RawFlags"); }
+    QJsonParseError err{};
+    QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return;
+    QJsonObject o = doc.object();
 
-bool DjiMicController::tx2Connected() const { return rust_get_bool("tx2Connected"); }
-int DjiMicController::tx2BatteryPct() const { return rust_get_int("tx2BatteryPct"); }
-int DjiMicController::tx2BatteryCode() const { return rust_get_int("tx2BatteryCode"); }
-bool DjiMicController::tx2Charging() const { return rust_get_bool("tx2Charging"); }
-int DjiMicController::tx2VuLevel() const { return rust_get_int("tx2VuLevel"); }
-QString DjiMicController::tx2Serial() const { return rStr("tx2Serial"); }
-QString DjiMicController::tx2Firmware() const { return rStr("tx2Firmware"); }
-QString DjiMicController::tx2Product() const { return rStr("tx2Product"); }
-QString DjiMicController::tx2Tone() const { return rStr("tx2Tone"); }
-QString DjiMicController::tx2NcSummary() const { return rStr("tx2NcSummary"); }
-QString DjiMicController::tx2RawFlags() const { return rStr("tx2RawFlags"); }
+    bool winDirty = forceAll;
+    bool cfgDirty = forceAll;
+    bool telDirty = forceAll;
+    bool ctlDirty = forceAll;
+    bool noiseDirty = forceAll;
+    bool statDirty = forceAll;
 
-QString DjiMicController::settingNcMode() const { return rStr("settingNcMode"); }
-QString DjiMicController::settingNcPower() const { return rStr("settingNcPower"); }
-QString DjiMicController::ncOverallSummary() const { return rStr("ncOverallSummary"); }
-QString DjiMicController::settingStereo() const { return rStr("settingStereo"); }
-QString DjiMicController::settingLowCut() const { return rStr("settingLowCut"); }
-QString DjiMicController::settingSafetyTrack() const { return rStr("settingSafetyTrack"); }
-QString DjiMicController::settingClipLimiter() const { return rStr("settingClipLimiter"); }
-QString DjiMicController::settingLeds() const { return rStr("settingLeds"); }
-QString DjiMicController::settingRxAutoOff() const { return rStr("settingRxAutoOff"); }
-QString DjiMicController::settingTxAutoOff() const { return rStr("settingTxAutoOff"); }
-QString DjiMicController::settingCameraPower() const { return rStr("settingCameraPower"); }
-QString DjiMicController::settingPlugFree() const { return rStr("settingPlugFree"); }
+    assignIfChanged(m_windowVisible, o.value(QStringLiteral("windowVisible")).toBool(true), winDirty);
+    assignIfChanged(m_quitting, o.value(QStringLiteral("quitting")).toBool(false), winDirty);
+    assignIfChanged(m_activeTabIndex, o.value(QStringLiteral("activeTabIndex")).toInt(0), winDirty);
 
-int DjiMicController::alsaVolumePct() const { return rust_get_int("alsaVolumePct"); }
-bool DjiMicController::alsaMuted() const { return rust_get_bool("alsaMuted"); }
-QString DjiMicController::aiNcMode() const { return rStr("aiNcMode"); }
-int DjiMicController::aiNcStrengthPct() const { return rust_get_int("aiNcStrengthPct"); }
-bool DjiMicController::aiNcVirtualMic() const { return rust_get_bool("aiNcVirtualMic"); }
-bool DjiMicController::aiNcVirtualMicActive() const { return rust_get_bool("aiNcVirtualMicActive"); }
-bool DjiMicController::noiseLearnActive() const { return rust_get_bool("noiseLearnActive"); }
-int DjiMicController::noiseLearnProgressPct() const { return rust_get_int("noiseLearnProgressPct"); }
-QString DjiMicController::noiseLearnStatus() const { return rStr("noiseLearnStatus"); }
-bool DjiMicController::noiseProfileLearned() const { return rust_get_bool("noiseProfileLearned"); }
-QString DjiMicController::noiseProfileLearnedAt() const { return rStr("noiseProfileLearnedAt"); }
-QString DjiMicController::noiseProfileSource() const { return rStr("noiseProfileSource"); }
-QString DjiMicController::noiseSignature() const { return rStr("noiseSignature"); }
-QString DjiMicController::noiseFloorSummary() const { return rStr("noiseFloorSummary"); }
-QString DjiMicController::learnedFilterSummary() const { return rStr("learnedFilterSummary"); }
-QString DjiMicController::bandLowRumbleStr() const { return rStr("bandLowRumbleStr"); }
-QString DjiMicController::bandFanHumStr() const { return rStr("bandFanHumStr"); }
-QString DjiMicController::bandMidRoomStr() const { return rStr("bandMidRoomStr"); }
-QString DjiMicController::bandHighHissStr() const { return rStr("bandHighHissStr"); }
-int DjiMicController::adaptivePasses() const { return rust_get_int("adaptivePasses"); }
-QString DjiMicController::linuxAudioSummary() const { return rStr("linuxAudioSummary"); }
-QString DjiMicController::usbVidPid() const { return rStr("usbVidPid"); }
-QString DjiMicController::usbManufacturerProduct() const { return rStr("usbManufacturerProduct"); }
-QString DjiMicController::usbDescriptorSerial() const { return rStr("usbDescriptorSerial"); }
-QString DjiMicController::usbTopology() const { return rStr("usbTopology"); }
-QString DjiMicController::usbSpeedAndPower() const { return rStr("usbSpeedAndPower"); }
-QString DjiMicController::usbFsNode() const { return rStr("usbFsNode"); }
-QString DjiMicController::usbSysfsPath() const { return rStr("usbSysfsPath"); }
-QString DjiMicController::hidNodeAndPhys() const { return rStr("hidNodeAndPhys"); }
-QString DjiMicController::hidServiceSummary() const { return rStr("hidServiceSummary"); }
-QString DjiMicController::alsaCardDetails() const { return rStr("alsaCardDetails"); }
-QString DjiMicController::pipewireNodeDetails() const { return rStr("pipewireNodeDetails"); }
-QString DjiMicController::pipewireFormatState() const { return rStr("pipewireFormatState"); }
-QString DjiMicController::lastHeartbeatHex() const { return rStr("lastHeartbeatHex"); }
-QString DjiMicController::aux5b05Hex() const { return rStr("aux5b05Hex"); }
-QString DjiMicController::aux0474Hex() const { return rStr("aux0474Hex"); }
-QString DjiMicController::lastActionMessage() const { return rStr("lastActionMessage"); }
-QString DjiMicController::eventLogText() const { return rStr("eventLogText"); }
-QString DjiMicController::statusBarSummary() const { return rStr("statusBarSummary"); }
+    assignIfChanged(m_uiZoomPercent, o.value(QStringLiteral("uiZoomPercent")).toInt(100), cfgDirty);
+    QString newScheme = o.value(QStringLiteral("colorScheme")).toString(QStringLiteral("system"));
+    if (assignIfChanged(m_colorScheme, newScheme, cfgDirty)) {
+        applyNativeColorScheme(m_colorScheme);
+    }
+    assignIfChanged(m_startOnLogin, o.value(QStringLiteral("startOnLogin")).toBool(true), cfgDirty);
+    assignIfChanged(m_startMinimized, o.value(QStringLiteral("startMinimized")).toBool(true), cfgDirty);
+    assignIfChanged(m_alertOnRxDisconnect, o.value(QStringLiteral("alertOnRxDisconnect")).toBool(true), cfgDirty);
+    assignIfChanged(m_alertOnTxDisconnect, o.value(QStringLiteral("alertOnTxDisconnect")).toBool(true), cfgDirty);
+    assignIfChanged(m_alertOnLowBattery, o.value(QStringLiteral("alertOnLowBattery")).toBool(true), cfgDirty);
+    assignIfChanged(m_lowBatteryThresholdPct, o.value(QStringLiteral("lowBatteryThresholdPct")).toInt(25), cfgDirty);
+    assignIfChanged(m_aiNcMode, o.value(QStringLiteral("aiNcMode")).toString(QStringLiteral("learned_ai")), cfgDirty);
+    assignIfChanged(m_aiNcStrengthPct, o.value(QStringLiteral("aiNcStrengthPct")).toInt(80), cfgDirty);
+    assignIfChanged(m_aiNcVirtualMic, o.value(QStringLiteral("aiNcVirtualMic")).toBool(false), cfgDirty);
+
+    assignIfChanged(m_deviceInUse, o.value(QStringLiteral("deviceInUse")).toBool(false), telDirty);
+    m_minBatteryPct = o.value(QStringLiteral("minBatteryPct")).toInt(-1);
+    m_maxVuLevel = o.value(QStringLiteral("maxVuLevel")).toInt(0);
+    assignIfChanged(m_usbPresent, o.value(QStringLiteral("usbPresent")).toBool(false), telDirty);
+    assignIfChanged(m_rxConnected, o.value(QStringLiteral("rxConnected")).toBool(false), telDirty);
+    assignIfChanged(m_txConnectedCount, o.value(QStringLiteral("txConnectedCount")).toInt(0), telDirty);
+    assignIfChanged(m_overallStatusState, o.value(QStringLiteral("overallStatusState")).toString(), telDirty);
+    assignIfChanged(m_overallStatusBadge, o.value(QStringLiteral("overallStatusBadge")).toString(), telDirty);
+    assignIfChanged(m_headerSubtitle, o.value(QStringLiteral("headerSubtitle")).toString(), telDirty);
+    assignIfChanged(m_protocolDialect, o.value(QStringLiteral("protocolDialect")).toString(), telDirty);
+    assignIfChanged(m_lastSequence, o.value(QStringLiteral("lastSequence")).toInt(0), telDirty);
+    assignIfChanged(m_heartbeatCount, o.value(QStringLiteral("heartbeatCount")).toInt(0), telDirty);
+    assignIfChanged(m_rxHardwareModel, o.value(QStringLiteral("rxHardwareModel")).toString(), telDirty);
+    assignIfChanged(m_rxSerial, o.value(QStringLiteral("rxSerial")).toString(), telDirty);
+    assignIfChanged(m_rxFirmware, o.value(QStringLiteral("rxFirmware")).toString(), telDirty);
+    assignIfChanged(m_rxFirmwareAndRev, o.value(QStringLiteral("rxFirmwareAndRev")).toString(), telDirty);
+    assignIfChanged(m_rxGainSummary, o.value(QStringLiteral("rxGainSummary")).toString(), telDirty);
+    assignIfChanged(m_rxSubtitle, o.value(QStringLiteral("rxSubtitle")).toString(), telDirty);
+    assignIfChanged(m_statusBarSummary, o.value(QStringLiteral("statusBarSummary")).toString(), telDirty);
+    syncTxSlot(m_tx1, o.value(QStringLiteral("tx1")).toObject(), telDirty);
+    syncTxSlot(m_tx2, o.value(QStringLiteral("tx2")).toObject(), telDirty);
+
+    assignIfChanged(m_settingNcMode, o.value(QStringLiteral("settingNcMode")).toString(), ctlDirty);
+    assignIfChanged(m_settingNcPower, o.value(QStringLiteral("settingNcPower")).toString(), ctlDirty);
+    assignIfChanged(m_ncOverallSummary, o.value(QStringLiteral("ncOverallSummary")).toString(), ctlDirty);
+    assignIfChanged(m_settingStereo, o.value(QStringLiteral("settingStereo")).toString(), ctlDirty);
+    assignIfChanged(m_settingLowCut, o.value(QStringLiteral("settingLowCut")).toString(), ctlDirty);
+    assignIfChanged(m_settingSafetyTrack, o.value(QStringLiteral("settingSafetyTrack")).toString(), ctlDirty);
+    assignIfChanged(m_settingClipLimiter, o.value(QStringLiteral("settingClipLimiter")).toString(), ctlDirty);
+    assignIfChanged(m_settingLeds, o.value(QStringLiteral("settingLeds")).toString(), ctlDirty);
+    assignIfChanged(m_settingRxAutoOff, o.value(QStringLiteral("settingRxAutoOff")).toString(), ctlDirty);
+    assignIfChanged(m_settingTxAutoOff, o.value(QStringLiteral("settingTxAutoOff")).toString(), ctlDirty);
+    assignIfChanged(m_settingCameraPower, o.value(QStringLiteral("settingCameraPower")).toString(), ctlDirty);
+    assignIfChanged(m_settingPlugFree, o.value(QStringLiteral("settingPlugFree")).toString(), ctlDirty);
+    assignIfChanged(m_alsaVolumePct, o.value(QStringLiteral("alsaVolumePct")).toInt(100), ctlDirty);
+    assignIfChanged(m_alsaMuted, o.value(QStringLiteral("alsaMuted")).toBool(false), ctlDirty);
+    assignIfChanged(m_linuxAudioSummary, o.value(QStringLiteral("linuxAudioSummary")).toString(), ctlDirty);
+
+    assignIfChanged(m_aiNcVirtualMicActive, o.value(QStringLiteral("aiNcVirtualMicActive")).toBool(false), noiseDirty);
+    assignIfChanged(m_noiseLearnActive, o.value(QStringLiteral("noiseLearnActive")).toBool(false), noiseDirty);
+    assignIfChanged(m_noiseLearnProgressPct, o.value(QStringLiteral("noiseLearnProgressPct")).toInt(0), noiseDirty);
+    assignIfChanged(m_noiseLearnStatus, o.value(QStringLiteral("noiseLearnStatus")).toString(), noiseDirty);
+    assignIfChanged(m_noiseProfileLearned, o.value(QStringLiteral("noiseProfileLearned")).toBool(false), noiseDirty);
+    assignIfChanged(m_noiseProfileLearnedAt, o.value(QStringLiteral("noiseProfileLearnedAt")).toString(), noiseDirty);
+    assignIfChanged(m_noiseProfileSource, o.value(QStringLiteral("noiseProfileSource")).toString(), noiseDirty);
+    assignIfChanged(m_noiseSignature, o.value(QStringLiteral("noiseSignature")).toString(), noiseDirty);
+    assignIfChanged(m_noiseFloorSummary, o.value(QStringLiteral("noiseFloorSummary")).toString(), noiseDirty);
+    assignIfChanged(m_learnedFilterSummary, o.value(QStringLiteral("learnedFilterSummary")).toString(), noiseDirty);
+    assignIfChanged(m_bandLowRumbleStr, o.value(QStringLiteral("bandLowRumbleStr")).toString(), noiseDirty);
+    assignIfChanged(m_bandFanHumStr, o.value(QStringLiteral("bandFanHumStr")).toString(), noiseDirty);
+    assignIfChanged(m_bandMidRoomStr, o.value(QStringLiteral("bandMidRoomStr")).toString(), noiseDirty);
+    assignIfChanged(m_bandHighHissStr, o.value(QStringLiteral("bandHighHissStr")).toString(), noiseDirty);
+    assignIfChanged(m_adaptivePasses, o.value(QStringLiteral("adaptivePasses")).toInt(0), noiseDirty);
+
+    assignIfChanged(m_udevReady, o.value(QStringLiteral("udevReady")).toBool(false), statDirty);
+    assignIfChanged(m_udevSummary, o.value(QStringLiteral("udevSummary")).toString(), statDirty);
+    assignIfChanged(m_udevRuleFileStatus, o.value(QStringLiteral("udevRuleFileStatus")).toString(), statDirty);
+    assignIfChanged(m_udevDeviceAccessStatus, o.value(QStringLiteral("udevDeviceAccessStatus")).toString(), statDirty);
+    assignIfChanged(m_usbVidPid, o.value(QStringLiteral("usbVidPid")).toString(), statDirty);
+    assignIfChanged(m_usbManufacturerProduct, o.value(QStringLiteral("usbManufacturerProduct")).toString(), statDirty);
+    assignIfChanged(m_usbDescriptorSerial, o.value(QStringLiteral("usbDescriptorSerial")).toString(), statDirty);
+    assignIfChanged(m_usbTopology, o.value(QStringLiteral("usbTopology")).toString(), statDirty);
+    assignIfChanged(m_usbSpeedAndPower, o.value(QStringLiteral("usbSpeedAndPower")).toString(), statDirty);
+    assignIfChanged(m_usbFsNode, o.value(QStringLiteral("usbFsNode")).toString(), statDirty);
+    assignIfChanged(m_usbSysfsPath, o.value(QStringLiteral("usbSysfsPath")).toString(), statDirty);
+    assignIfChanged(m_hidNodeAndPhys, o.value(QStringLiteral("hidNodeAndPhys")).toString(), statDirty);
+    assignIfChanged(m_hidServiceSummary, o.value(QStringLiteral("hidServiceSummary")).toString(), statDirty);
+    assignIfChanged(m_alsaCardDetails, o.value(QStringLiteral("alsaCardDetails")).toString(), statDirty);
+    assignIfChanged(m_pipewireNodeDetails, o.value(QStringLiteral("pipewireNodeDetails")).toString(), statDirty);
+    assignIfChanged(m_pipewireFormatState, o.value(QStringLiteral("pipewireFormatState")).toString(), statDirty);
+    assignIfChanged(m_lastHeartbeatHex, o.value(QStringLiteral("lastHeartbeatHex")).toString(), statDirty);
+    assignIfChanged(m_aux5b05Hex, o.value(QStringLiteral("aux5b05Hex")).toString(), statDirty);
+    assignIfChanged(m_aux0474Hex, o.value(QStringLiteral("aux0474Hex")).toString(), statDirty);
+    assignIfChanged(m_lastActionMessage, o.value(QStringLiteral("lastActionMessage")).toString(), statDirty);
+    assignIfChanged(m_eventLogText, o.value(QStringLiteral("eventLogText")).toString(), statDirty);
+
+    if (winDirty) emit windowChanged();
+    if (cfgDirty) emit configChanged();
+    if (telDirty) emit telemetryChanged();
+    if (ctlDirty) emit controlsChanged();
+    if (noiseDirty) emit noiseChanged();
+    if (statDirty) emit statusChanged();
+}
+
+void DjiMicController::applyNativeColorScheme(const QString& scheme) {
+    if (!QCoreApplication::instance()) return;
+    KColorSchemeManager* mgr = KColorSchemeManager::instance();
+    if (!mgr) return;
+    mgr->setAutosaveChanges(false);
+    if (scheme == QStringLiteral("dark")) {
+        if (mgr->indexForSchemeId(QStringLiteral("BreezeDark")).isValid()) {
+            mgr->activateSchemeId(QStringLiteral("BreezeDark"));
+        } else {
+            mgr->activateScheme(mgr->indexForScheme(QStringLiteral("Breeze Dark")));
+        }
+    } else if (scheme == QStringLiteral("light")) {
+        if (mgr->indexForSchemeId(QStringLiteral("BreezeLight")).isValid()) {
+            mgr->activateSchemeId(QStringLiteral("BreezeLight"));
+        } else {
+            mgr->activateScheme(mgr->indexForScheme(QStringLiteral("Breeze Light")));
+        }
+    } else {
+        mgr->activateSchemeId(QString());
+    }
+}
+
+void DjiMicController::sendDesktopNotificationDBus(
+    const QString& eventId,
+    const QString& title,
+    const QString& body,
+    const QString& icon,
+    int urgency
+) {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) return;
+
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.Notifications"),
+        QStringLiteral("/org/freedesktop/Notifications"),
+        QStringLiteral("org.freedesktop.Notifications"),
+        QStringLiteral("Notify")
+    );
+
+    QVariantMap hints;
+    hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("dji-mic-tray"));
+    hints.insert(QStringLiteral("x-kde-appname"), QStringLiteral("dji-mic-tray"));
+    hints.insert(QStringLiteral("x-kde-display-appname"), QStringLiteral("KDE DJI Mic Mini Control"));
+    hints.insert(QStringLiteral("x-kde-eventId"), eventId);
+    hints.insert(QStringLiteral("urgency"), QVariant::fromValue<uchar>(static_cast<uchar>(qBound(0, urgency, 2))));
+
+    msg << QStringLiteral("KDE DJI Mic Mini Control")
+        << static_cast<uint>(0)
+        << icon
+        << title
+        << body
+        << QStringList()
+        << hints
+        << -1;
+
+    bus.call(msg, QDBus::NoBlock);
+}
 
 void DjiMicController::setWindowVisible(bool vis) { rust_set_window_visible(vis); }
 void DjiMicController::toggleWindow() { rust_toggle_window(); }
@@ -382,7 +535,7 @@ void DjiMicController::refreshNow() { rust_refresh_now(); }
 void DjiMicController::recheckUdevStatus() { rust_recheck_udev_status(); }
 void DjiMicController::copyUdevCommandToClipboard() {
     if (QClipboard* cb = QGuiApplication::clipboard()) {
-        cb->setText(rStr("udevInstallOneliner"));
+        cb->setText(takeRustStr(rust_get_udev_oneliner()));
         rust_notify_udev_copied();
     }
 }
@@ -402,7 +555,7 @@ void DjiMicController::setAiNcStrength(int pct) { rust_set_ai_nc_strength(pct); 
 void DjiMicController::setAiNcVirtualMic(bool enabled) { rust_set_ai_nc_virtual_mic(enabled); }
 void DjiMicController::copyJsonSnapshotToClipboard() {
     if (QClipboard* cb = QGuiApplication::clipboard()) {
-        cb->setText(rStr("fullSnapshotJson"));
+        cb->setText(takeRustStr(rust_get_full_snapshot_json()));
         rust_notify_json_copied();
     }
 }
@@ -427,7 +580,6 @@ void DjiMicController::zoomIn() { setUiZoomPercent(uiZoomPercent() + 10); }
 void DjiMicController::zoomOut() { setUiZoomPercent(uiZoomPercent() - 10); }
 void DjiMicController::zoomReset() { setUiZoomPercent(100); }
 void DjiMicController::quitApp() {
-    if (m_pollTimer) m_pollTimer->stop();
     rust_quit_app();
     QApplication::quit();
 }
@@ -437,6 +589,7 @@ void DjiMicController::setupTray() {
     m_tray->setCategory(KStatusNotifierItem::Hardware);
     m_tray->setTitle(QStringLiteral("KDE DJI Mic Mini Control"));
     m_tray->setStandardActionsEnabled(false);
+    // KStatusNotifierItem takes ownership of the context menu upon setContextMenu()
     m_trayMenu = new QMenu();
     m_tray->setContextMenu(m_trayMenu);
     connect(m_tray, &KStatusNotifierItem::activateRequested, this, [this](bool, const QPoint&) {
@@ -459,26 +612,26 @@ void DjiMicController::updateTrayUi(bool force) {
 
     bool rxOk = rxConnected();
     int txCnt = txConnectedCount();
-    int minBat = rust_get_int("minBatteryPct");
-    int maxVu = rust_get_int("maxVuLevel");
-    bool vuActive = (rxOk && txCnt > 0 && !alsaMuted() && maxVu > 40);
+    int minBat = m_minBatteryPct;
+    bool vuActive = (rxOk && txCnt > 0 && !alsaMuted() && m_maxVuLevel > 40);
     bool muted = alsaMuted();
 
-    QString iconSig = QStringLiteral("%1|%2|%3|%4")
+    QString iconSig = QStringLiteral("%1|%2|%3|%4|%5")
                           .arg(rxOk)
                           .arg(txCnt)
                           .arg(minBat)
+                          .arg(vuActive)
                           .arg(muted);
 
-    QIcon icon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, vuActive ? 60 : 0, muted);
-    if (force || iconSig != m_lastTrayIconSig) {
+    if (force || m_cachedTrayIcon.isNull() || iconSig != m_lastTrayIconSig) {
         m_lastTrayIconSig = iconSig;
-        m_tray->setIconByPixmap(icon);
+        m_cachedTrayIcon = renderDjiMicTrayIcon(rxOk, txCnt, minBat, vuActive ? 60 : 0, muted);
+        m_tray->setIconByPixmap(m_cachedTrayIcon);
         if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
-            app->setWindowIcon(icon);
+            app->setWindowIcon(m_cachedTrayIcon);
         }
         for (QWindow* w : QGuiApplication::topLevelWindows()) {
-            w->setIcon(icon);
+            w->setIcon(m_cachedTrayIcon);
         }
     }
 
@@ -505,7 +658,7 @@ void DjiMicController::updateTrayUi(bool force) {
     QString newTip = tipTitle + QStringLiteral("\n") + tipSub;
     if (force || newTip != m_lastTrayTip) {
         m_lastTrayTip = newTip;
-        m_tray->setToolTip(icon, tipTitle, tipSub);
+        m_tray->setToolTip(m_cachedTrayIcon, tipTitle, tipSub);
     }
 
     QString menuSig = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15|%16|%17|%18")
@@ -655,7 +808,6 @@ void DjiMicController::registerKdeGlobalShortcuts() {
         return;
     }
 
-    // Notify KNotification daemon to re-parse ~/.local/share/knotifications6/dji-mic-tray.notifyrc
     QDBusMessage notifySig = QDBusMessage::createSignal(
         QStringLiteral("/Config"),
         QStringLiteral("org.kde.knotification"),
@@ -756,7 +908,7 @@ PloopyAndZoomEventFilter::PloopyAndZoomEventFilter(DjiMicController* controller)
     m_hoverRestoreTimer->setInterval(400);
     connect(m_hoverRestoreTimer, &QTimer::timeout, this, [this]() {
         m_scrollingActive = false;
-        m_lockedFlickable = nullptr;
+        m_lockedFlickable.clear();
     });
 }
 
@@ -796,7 +948,7 @@ bool PloopyAndZoomEventFilter::eventFilter(QObject* obj, QEvent* event) {
     }
     if (etype == QEvent::MouseMove && m_scrollingActive) {
         m_scrollingActive = false;
-        m_lockedFlickable = nullptr;
+        m_lockedFlickable.clear();
     }
     auto* win = qobject_cast<QQuickWindow*>(obj);
     if (win && etype == QEvent::KeyPress) {
@@ -838,8 +990,9 @@ bool PloopyAndZoomEventFilter::eventFilter(QObject* obj, QEvent* event) {
             qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
             QPointF scenePos = we->position();
             QQuickItem* flick = nullptr;
-            if (m_lockedFlickable && (nowMs - m_lastWheelMs) <= 350 && m_lockedFlickable->isVisible()) {
-                flick = m_lockedFlickable;
+            QQuickItem* locked = m_lockedFlickable.data();
+            if (locked && (nowMs - m_lastWheelMs) <= 350 && locked->isVisible()) {
+                flick = locked;
             }
             if (!flick) {
                 flick = findDeepestFlickable(win->contentItem(), scenePos);
@@ -921,11 +1074,16 @@ extern "C" int cpp_run_dji_mic_tray(int argc, char** argv, bool startMinimized, 
     app.setQuitOnLastWindowClosed(false);
 
     QString appDir = QString::fromUtf8(appDirCStr);
-    ensureTaskManagerIconFiles(appDir);
+    if (!uiTestMode) {
+        ensureTaskManagerIconFiles(appDir);
+    }
     QIcon initialIcon = renderDjiMicTrayIcon(true, 1, 100, 0, false);
     app.setWindowIcon(initialIcon);
 
     DjiMicController controller(startMinimized, uiTestMode, appDir);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        rust_quit_app();
+    });
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("controller"), &controller);

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
 pub const SOF: u8 = 0x55;
 pub const VERSION: u8 = 0x04;
@@ -16,6 +18,56 @@ pub const CMD_ID_STATUS_PUSH: u8 = 0x03;
 pub const CMD_ID_HEARTBEAT_PUSH: u8 = 0x05;
 
 pub const CRC8_INIT: u8 = 0x77;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DumlDialect {
+    #[default]
+    V1,
+    V2,
+}
+
+impl DumlDialect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "v1",
+            Self::V2 => "v2",
+        }
+    }
+
+    pub fn from_str_lossy(s: &str) -> Self {
+        if s.trim().eq_ignore_ascii_case("v2") {
+            Self::V2
+        } else {
+            Self::V1
+        }
+    }
+}
+
+impl fmt::Display for DumlDialect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DumlDialect {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "v1" => Ok(Self::V1),
+            "v2" => Ok(Self::V2),
+            other => Err(format!("Invalid dialect '{other}' (expected 'v1' or 'v2')")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingTarget {
+    Rx,
+    TxAll,
+    TxUnit,
+}
 
 const CRC8_TABLE: [u8; 256] = [
     0x00, 0x5E, 0xBC, 0xE2, 0x61, 0x3F, 0xDD, 0x83, 0xC2, 0x9C, 0x7E, 0x20, 0xA3, 0xFD, 0x1F, 0x41,
@@ -63,6 +115,9 @@ const CRC16_TABLE: [u16; 256] = [
 
 pub const CRC16_V1_INIT: u16 = 0x0000;
 pub const CRC16_V1_RESIDUE: u16 = 0xBB01;
+/// Linear inverse of `CRC16_V1_RESIDUE = 0xBB01` under `CRC16_TABLE`:
+/// `crc16(&[frame, ((crc(frame, 0) ^ 0xB92D) as le)], 0) == 0xBB01` for all 65,536 states.
+pub const CRC16_V1_RESIDUE_XOR: u16 = 0xB92D;
 pub const CRC16_V2_INIT: u16 = 0x3692;
 pub const CRC16_V2_RESIDUE: u16 = 0x0000;
 
@@ -74,6 +129,7 @@ pub fn crc8(data: &[u8], init: u8) -> u8 {
     crc
 }
 
+#[inline]
 pub fn crc16_step(crc: u16, byte: u8) -> u16 {
     (crc >> 8) ^ CRC16_TABLE[((crc ^ (byte as u16)) & 0xFF) as usize]
 }
@@ -83,25 +139,17 @@ pub fn crc16(data: &[u8], init: u16) -> u16 {
     for &b in data {
         crc = crc16_step(crc, b);
     }
-    crc & 0xFFFF
+    crc
 }
 
-pub fn calc_frame_crc16_bytes(frame_without_crc: &[u8], dialect: &str) -> [u8; 2] {
-    let (init, residue) = if dialect == "v1" {
-        (CRC16_V1_INIT, CRC16_V1_RESIDUE)
-    } else {
-        (CRC16_V2_INIT, CRC16_V2_RESIDUE)
-    };
-    let v = crc16(frame_without_crc, init);
-    for b0 in 0u16..256 {
-        let v1 = crc16_step(v, b0 as u8);
-        let target = residue ^ (v1 >> 8);
-        if let Some(idx) = CRC16_TABLE.iter().position(|&x| x == target) {
-            let b1 = ((v1 ^ (idx as u16)) & 0xFF) as u8;
-            return [b0 as u8, b1];
+/// Compute trailing 2-byte little-endian DUML frame CRC-16 in O(1) without brute-force search.
+pub fn calc_frame_crc16_bytes(frame_without_crc: &[u8], dialect: DumlDialect) -> [u8; 2] {
+    match dialect {
+        DumlDialect::V1 => {
+            (crc16(frame_without_crc, CRC16_V1_INIT) ^ CRC16_V1_RESIDUE_XOR).to_le_bytes()
         }
+        DumlDialect::V2 => crc16(frame_without_crc, CRC16_V2_INIT).to_le_bytes(),
     }
-    v.to_le_bytes()
 }
 
 pub fn battery_code_to_percent(code: Option<i32>) -> Option<i32> {
@@ -142,11 +190,13 @@ pub fn parse_ascii_string(data: &[u8]) -> String {
 }
 
 pub fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0F) as usize] as char);
     }
-    s
+    out
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -192,7 +242,7 @@ pub struct TxInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceStatus {
     pub connected: bool,
-    pub dialect: String,
+    pub dialect: DumlDialect,
     pub gain_dial_db: Option<i32>,
     pub nc_enabled: Option<bool>,
     pub rx: Option<RxInfo>,
@@ -211,7 +261,7 @@ impl Default for DeviceStatus {
     fn default() -> Self {
         Self {
             connected: false,
-            dialect: "v1".to_string(),
+            dialect: DumlDialect::V1,
             gain_dial_db: None,
             nc_enabled: None,
             rx: None,
@@ -249,18 +299,18 @@ pub struct DumlFrame {
     pub cmd_id: u8,
     pub payload: Vec<u8>,
     pub raw: Vec<u8>,
-    pub dialect: String,
+    pub dialect: DumlDialect,
 }
 
-pub fn detect_dialect(raw: &[u8]) -> Option<&'static str> {
+pub fn detect_dialect(raw: &[u8]) -> Option<DumlDialect> {
     if raw.len() < 12 {
         return None;
     }
     if raw[8] == 0x00 && raw[9] == 0x5B && raw[10] == 0x03 {
         if raw[11] == 0x00 {
-            return Some("v1");
+            return Some(DumlDialect::V1);
         } else if raw[11] == 0x03 {
-            return Some("v2");
+            return Some(DumlDialect::V2);
         }
     }
     None
@@ -278,15 +328,19 @@ pub fn decode_frame(raw: &[u8]) -> Option<DumlFrame> {
         return None;
     }
 
-    let dialect = if let Some(d) = detect_dialect(raw) {
-        d
-    } else if crc16(raw, CRC16_V1_INIT) == CRC16_V1_RESIDUE {
-        "v1"
-    } else if crc16(raw, CRC16_V2_INIT) == CRC16_V2_RESIDUE {
-        "v2"
+    // Reject frames that fail both V1 and V2 CRC-16 checksums (prevents corrupted frames
+    // from mutating live telemetry or hardware state).
+    let v1_ok = crc16(raw, CRC16_V1_INIT) == CRC16_V1_RESIDUE;
+    let v2_ok = crc16(raw, CRC16_V2_INIT) == CRC16_V2_RESIDUE;
+    if !v1_ok && !v2_ok {
+        return None;
+    }
+
+    let dialect = detect_dialect(raw).unwrap_or(if v1_ok {
+        DumlDialect::V1
     } else {
-        "v1"
-    };
+        DumlDialect::V2
+    });
 
     let sender = raw[4];
     let receiver = raw[5];
@@ -307,52 +361,55 @@ pub fn decode_frame(raw: &[u8]) -> Option<DumlFrame> {
         cmd_id,
         payload,
         raw: raw.to_vec(),
-        dialect: dialect.to_string(),
+        dialect,
     })
 }
 
 pub fn take_frames(buffer: &mut Vec<u8>) -> Vec<DumlFrame> {
     let mut frames = Vec::new();
-    loop {
-        if buffer.len() < 4 {
-            break;
-        }
-        let mut start: Option<usize> = None;
-        for i in 0..=(buffer.len() - 4) {
+    let mut cursor = 0usize;
+    let len = buffer.len();
+
+    while cursor + 4 <= len {
+        let mut found = None;
+        for i in cursor..=(len - 4) {
             if buffer[i] == SOF && (buffer[i + 2] & 0xFC) == VERSION {
                 let flen = (buffer[i + 1] as usize) | (((buffer[i + 2] & 0x03) as usize) << 8);
                 if (13..=256).contains(&flen) && crc8(&buffer[i..i + 4], CRC8_INIT) == 0 {
-                    start = Some(i);
+                    found = Some((i, flen));
                     break;
                 }
             }
         }
 
-        let Some(sof) = start else {
-            let keep = buffer.len().min(3);
-            let drain_to = buffer.len() - keep;
-            buffer.drain(..drain_to);
+        let Some((sof, frame_len)) = found else {
+            cursor = len.saturating_sub(3);
             break;
         };
 
-        if sof > 0 {
-            buffer.drain(..sof);
-        }
-        if buffer.len() < 4 {
+        if sof + frame_len > len {
+            cursor = sof;
             break;
         }
 
-        let frame_len = (buffer[1] as usize) | (((buffer[2] & 0x03) as usize) << 8);
-        if buffer.len() < frame_len {
-            break;
-        }
-
-        let raw_frame: Vec<u8> = buffer.drain(..frame_len).collect();
-        if let Some(df) = decode_frame(&raw_frame) {
+        if let Some(df) = decode_frame(&buffer[sof..sof + frame_len]) {
             frames.push(df);
+            cursor = sof + frame_len;
+        } else {
+            cursor = sof + 1;
         }
     }
+
+    if cursor > 0 {
+        buffer.drain(..cursor.min(len));
+    }
     frames
+}
+
+fn ensure_tx_slots(status: &mut DeviceStatus) {
+    if status.tx.len() < 2 {
+        status.tx.resize(2, None);
+    }
 }
 
 pub fn decode_v1_heartbeat(status: &mut DeviceStatus, raw: &[u8]) {
@@ -362,7 +419,8 @@ pub fn decode_v1_heartbeat(status: &mut DeviceStatus, raw: &[u8]) {
         return;
     }
 
-    status.dialect = "v1".to_string();
+    ensure_tx_slots(status);
+    status.dialect = DumlDialect::V1;
     status.connected = true;
     status.last_sequence = u16::from_le_bytes([raw[6], raw[7]]);
     status.heartbeat_count += 1;
@@ -374,7 +432,7 @@ pub fn decode_v1_heartbeat(status: &mut DeviceStatus, raw: &[u8]) {
     let mut flags_byte: u8 = 0;
     let mut led_off: Option<bool> = None;
 
-    for slot_idx in 0..2 {
+    for (slot_idx, out_slot) in tx_list.iter_mut().enumerate() {
         if off + 1 >= raw.len() {
             break;
         }
@@ -421,7 +479,7 @@ pub fn decode_v1_heartbeat(status: &mut DeviceStatus, raw: &[u8]) {
                 .and_then(|p| p.voice_tone.clone())
                 .unwrap_or_else(|| "standard".to_string());
 
-            tx_list[slot_idx] = Some(TxInfo {
+            *out_slot = Some(TxInfo {
                 unit: (slot_idx + 1) as i32,
                 connected: true,
                 level: Some(level),
@@ -610,18 +668,19 @@ pub fn decode_v2_status(status: &mut DeviceStatus, raw: &[u8]) -> bool {
         return false;
     }
     let remainder = raw.len() - (header_len + 2);
-    if remainder % slot_len != 0 {
+    if !remainder.is_multiple_of(slot_len) {
         return false;
     }
     let tx_slots_in_frame = (remainder / slot_len).min(2);
 
+    ensure_tx_slots(status);
     let flags1 = raw[20];
     let flags2 = raw[21];
     let dial_raw = raw[22] as i8;
     status.gain_dial_db = Some(dial_raw as i32);
     let flags3 = raw[48];
 
-    status.dialect = "v2".to_string();
+    status.dialect = DumlDialect::V2;
     status.connected = true;
     status.last_sequence = u16::from_le_bytes([raw[6], raw[7]]);
     status.heartbeat_count += 1;
@@ -643,20 +702,20 @@ pub fn decode_v2_status(status: &mut DeviceStatus, raw: &[u8]) -> bool {
     }
 
     let connected_mask = raw[44];
-    for i in 0..2 {
+    for (i, slot) in status.tx.iter_mut().take(2).enumerate() {
         let is_conn = (connected_mask & (1 << i)) != 0;
         if is_conn {
-            if status.tx[i].is_none() {
-                status.tx[i] = Some(TxInfo {
+            if slot.is_none() {
+                *slot = Some(TxInfo {
                     unit: (i + 1) as i32,
                     connected: true,
                     ..Default::default()
                 });
-            } else if let Some(ref mut t) = status.tx[i] {
+            } else if let Some(ref mut t) = slot {
                 t.connected = true;
             }
         } else {
-            status.tx[i] = None;
+            *slot = None;
         }
     }
 
@@ -668,7 +727,7 @@ pub fn decode_v2_status(status: &mut DeviceStatus, raw: &[u8]) -> bool {
         let unit_byte = raw[slot_off + 1] as isize;
         let idx = unit_byte - 1;
         if (0..2).contains(&idx) {
-            if let Some(ref mut tx) = status.tx[idx as usize] {
+            if let Some(Some(ref mut tx)) = status.tx.get_mut(idx as usize) {
                 let slot_flags_6 = raw[slot_off + 6];
                 let slot_flags_7 = raw[slot_off + 7];
                 let slot_flags_9 = raw[slot_off + 9];
@@ -765,6 +824,7 @@ pub fn decode_v2_records(status: &mut DeviceStatus, raw: &[u8]) {
     if raw.len() < records_start + 2 {
         return;
     }
+    ensure_tx_slots(status);
     let end = raw.len() - 2;
     let mut i = records_start;
 
@@ -795,16 +855,18 @@ pub fn decode_v2_records(status: &mut DeviceStatus, raw: &[u8]) {
                 }
             } else if index == 1 || index == 2 {
                 let idx = (index - 1) as usize;
-                if status.tx[idx].is_none() {
-                    status.tx[idx] = Some(TxInfo {
-                        unit: index as i32,
-                        connected: true,
-                        ..Default::default()
-                    });
-                }
-                if let Some(ref mut t) = status.tx[idx] {
-                    t.serial = Some(serial);
-                    t.firmware = Some(fw_str);
+                if let Some(slot) = status.tx.get_mut(idx) {
+                    if slot.is_none() {
+                        *slot = Some(TxInfo {
+                            unit: index as i32,
+                            connected: true,
+                            ..Default::default()
+                        });
+                    }
+                    if let Some(ref mut t) = slot {
+                        t.serial = Some(serial);
+                        t.firmware = Some(fw_str);
+                    }
                 }
             }
         } else if tag == 0x04 && !data.is_empty() {
@@ -818,13 +880,13 @@ pub fn decode_v2_records(status: &mut DeviceStatus, raw: &[u8]) {
                 }
             } else if index == 1 || index == 2 {
                 let idx = (index - 1) as usize;
-                if let Some(ref mut t) = status.tx[idx] {
+                if let Some(Some(ref mut t)) = status.tx.get_mut(idx) {
                     t.bluetooth_id = Some(bt_id);
                 }
             }
         } else if tag == 0x05 && data.len() == 1 && (index == 1 || index == 2) {
             let idx = (index - 1) as usize;
-            if let Some(ref mut t) = status.tx[idx] {
+            if let Some(Some(ref mut t)) = status.tx.get_mut(idx) {
                 t.level = Some(data[0] as i32);
             }
         } else if tag == 0x06 && !data.is_empty() {
@@ -838,7 +900,7 @@ pub fn decode_v2_records(status: &mut DeviceStatus, raw: &[u8]) {
                 }
             } else if index == 1 || index == 2 {
                 let idx = (index - 1) as usize;
-                if let Some(ref mut t) = status.tx[idx] {
+                if let Some(Some(ref mut t)) = status.tx.get_mut(idx) {
                     t.product_name = Some(prod);
                 }
             }
@@ -904,21 +966,19 @@ pub fn apply_frame_to_status(frame: &DumlFrame, status: &mut DeviceStatus) {
         return;
     }
 
-    if let Some(dialect) = detect_dialect(raw) {
-        if dialect == "v1" {
-            decode_v1_heartbeat(status, raw);
-        } else if dialect == "v2" {
-            if !decode_v2_status(status, raw) {
-                decode_v2_records(status, raw);
-            }
+    match detect_dialect(raw) {
+        Some(DumlDialect::V1) => decode_v1_heartbeat(status, raw),
+        Some(DumlDialect::V2) if !decode_v2_status(status, raw) => {
+            decode_v2_records(status, raw);
         }
+        Some(DumlDialect::V2) | None => {}
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct SettingSpec {
     pub name: &'static str,
-    pub target: &'static str, // "rx", "tx", "tx_unit"
+    pub target: SettingTarget,
     pub v1_cmd_id: Option<u16>,
     pub v2_cmd_id: u16,
     pub allowed_values: &'static [(&'static str, u8)],
@@ -928,7 +988,7 @@ pub struct SettingSpec {
 pub const SETTINGS_SPEC: &[SettingSpec] = &[
     SettingSpec {
         name: "noise-cancel",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: Some(0x031D),
         v2_cmd_id: 0x0037,
         allowed_values: &[("basic", 0x00), ("strong", 0x01)],
@@ -936,7 +996,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "noise-cancel-power",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: None,
         v2_cmd_id: 0x0038,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -944,7 +1004,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "noise-cancel-button",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: None,
         v2_cmd_id: 0x000F,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -952,7 +1012,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "low-cut",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: Some(0x0303),
         v2_cmd_id: 0x0003,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -960,7 +1020,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "stereo",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x0008),
         v2_cmd_id: 0x0008,
         allowed_values: &[
@@ -973,7 +1033,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "safety-track",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x0021),
         v2_cmd_id: 0x0021,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -981,7 +1041,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "clip-limiter",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x001E),
         v2_cmd_id: 0x001E,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -989,7 +1049,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "auto-off-15m",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x0010),
         v2_cmd_id: 0x0010,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -997,7 +1057,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "tx-auto-off-15m",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: None,
         v2_cmd_id: 0x0010,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -1005,7 +1065,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "camera-power",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x0020),
         v2_cmd_id: 0x0020,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -1013,7 +1073,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "plug-free",
-        target: "rx",
+        target: SettingTarget::Rx,
         v1_cmd_id: Some(0x0023),
         v2_cmd_id: 0x0023,
         allowed_values: &[("off", 0x00), ("on", 0x01)],
@@ -1021,7 +1081,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "mic-leds",
-        target: "tx",
+        target: SettingTarget::TxAll,
         v1_cmd_id: Some(0x030A),
         v2_cmd_id: 0x000A,
         allowed_values: &[("on", 0x00), ("off", 0x02)],
@@ -1029,7 +1089,7 @@ pub const SETTINGS_SPEC: &[SettingSpec] = &[
     },
     SettingSpec {
         name: "voice-tone",
-        target: "tx_unit",
+        target: SettingTarget::TxUnit,
         v1_cmd_id: None,
         v2_cmd_id: 0x0029,
         allowed_values: &[("standard", 0x00), ("rich", 0x01), ("bright", 0x02)],
@@ -1041,17 +1101,20 @@ pub fn find_setting_spec(name: &str) -> Option<&'static SettingSpec> {
     SETTINGS_SPEC.iter().find(|s| s.name == name)
 }
 
-pub fn build_frame(
-    cmd_set: u8,
-    cmd_id: u8,
-    payload: &[u8],
-    seq: u16,
-    dialect: &str,
-    sender: u8,
-    receiver: u8,
-    pack_type: u8,
-) -> Vec<u8> {
-    let total_len = 13 + payload.len();
+#[derive(Debug, Clone, Copy)]
+pub struct RawPacketParams<'a> {
+    pub cmd_set: u8,
+    pub cmd_id: u8,
+    pub payload: &'a [u8],
+    pub seq: u16,
+    pub dialect: DumlDialect,
+    pub sender: u8,
+    pub receiver: u8,
+    pub pack_type: u8,
+}
+
+pub fn build_frame(params: &RawPacketParams<'_>) -> Vec<u8> {
+    let total_len = 13 + params.payload.len();
     let mut hdr4 = vec![
         SOF,
         (total_len & 0xFF) as u8,
@@ -1060,25 +1123,25 @@ pub fn build_frame(
     let hdr_crc = crc8(&hdr4, CRC8_INIT);
     hdr4.push(hdr_crc);
 
-    let seq_bytes = seq.to_le_bytes();
+    let seq_bytes = params.seq.to_le_bytes();
     let mut body = hdr4;
     body.extend_from_slice(&[
-        sender,
-        receiver,
+        params.sender,
+        params.receiver,
         seq_bytes[0],
         seq_bytes[1],
-        pack_type,
-        cmd_set,
-        cmd_id,
+        params.pack_type,
+        params.cmd_set,
+        params.cmd_id,
     ]);
-    body.extend_from_slice(payload);
+    body.extend_from_slice(params.payload);
 
-    let f_crc = calc_frame_crc16_bytes(&body, dialect);
+    let f_crc = calc_frame_crc16_bytes(&body, params.dialect);
     body.extend_from_slice(&f_crc);
     body
 }
 
-pub fn build_get_version_packet(seq: u16, _dialect: &str) -> Vec<u8> {
+pub fn build_get_version_packet(seq: u16, _dialect: DumlDialect) -> Vec<u8> {
     let length = 13usize;
     let mut hdr = vec![
         SOF,
@@ -1105,7 +1168,7 @@ pub fn build_command_packet(
     setting: &str,
     value: &str,
     seq: u16,
-    dialect: &str,
+    dialect: DumlDialect,
     tx_unit: Option<i32>,
 ) -> Result<Vec<u8>, String> {
     let spec = find_setting_spec(setting)
@@ -1117,74 +1180,76 @@ pub fn build_command_packet(
         .find(|(k, _)| *k == val_norm)
         .ok_or_else(|| format!("Invalid value '{}' for '{}'", value, setting))?;
 
-    if dialect == "v1" {
-        let cmd_id = spec.v1_cmd_id.ok_or_else(|| {
-            format!(
-                "Setting '{}' is not modifiable over USB on v1 firmware",
-                setting
-            )
-        })?;
-        let mut body = vec![
-            SOF,
-            19,
-            0x04,
-            0x03,
-            0x02,
-            0x5A,
-            (seq & 0xFF) as u8,
-            ((seq >> 8) & 0xFF) as u8,
-            0x40,
-            0x5B,
-            0x01,
-            0x00,
-            ((cmd_id >> 8) & 0xFF) as u8,
-            (cmd_id & 0xFF) as u8,
-            0x00,
-            0x01,
-            wire_val,
-        ];
-        let crc = calc_frame_crc16_bytes(&body, "v1");
-        body.extend_from_slice(&crc);
-        Ok(body)
-    } else {
-        let cmd_id = spec.v2_cmd_id;
-        let target: u16 = match spec.target {
-            "rx" => 0x0000,
-            "tx" => 0xFFFF,
-            "tx_unit" => {
-                let u = tx_unit.unwrap_or(1);
-                if u != 1 && u != 2 {
-                    return Err("Target TX unit must be 1 or 2 for this setting".to_string());
+    match dialect {
+        DumlDialect::V1 => {
+            let cmd_id = spec.v1_cmd_id.ok_or_else(|| {
+                format!(
+                    "Setting '{}' is not modifiable over USB on v1 firmware",
+                    setting
+                )
+            })?;
+            let mut body = vec![
+                SOF,
+                19,
+                0x04,
+                0x03,
+                0x02,
+                0x5A,
+                (seq & 0xFF) as u8,
+                ((seq >> 8) & 0xFF) as u8,
+                0x40,
+                0x5B,
+                0x01,
+                0x00,
+                ((cmd_id >> 8) & 0xFF) as u8,
+                (cmd_id & 0xFF) as u8,
+                0x00,
+                0x01,
+                wire_val,
+            ];
+            let crc = calc_frame_crc16_bytes(&body, DumlDialect::V1);
+            body.extend_from_slice(&crc);
+            Ok(body)
+        }
+        DumlDialect::V2 => {
+            let cmd_id = spec.v2_cmd_id;
+            let target: u16 = match spec.target {
+                SettingTarget::Rx => 0x0000,
+                SettingTarget::TxAll => 0xFFFF,
+                SettingTarget::TxUnit => {
+                    let u = tx_unit.unwrap_or(1);
+                    if u != 1 && u != 2 {
+                        return Err("Target TX unit must be 1 or 2 for this setting".to_string());
+                    }
+                    u as u16
                 }
-                u as u16
-            }
-            _ => 0xFFFF,
-        };
-        let mut body = vec![
-            SOF,
-            22,
-            0x04,
-            0xFC,
-            0x02,
-            0x5A,
-            (seq & 0xFF) as u8,
-            ((seq >> 8) & 0xFF) as u8,
-            0x40,
-            0x5B,
-            0x01,
-            0x02,
-            (target & 0xFF) as u8,
-            ((target >> 8) & 0xFF) as u8,
-            0x00,
-            0x00,
-            (cmd_id & 0xFF) as u8,
-            ((cmd_id >> 8) & 0xFF) as u8,
-            0x01,
-            wire_val,
-        ];
-        let crc = calc_frame_crc16_bytes(&body, "v2");
-        body.extend_from_slice(&crc);
-        Ok(body)
+            };
+            let mut body = vec![
+                SOF,
+                22,
+                0x04,
+                0xFC,
+                0x02,
+                0x5A,
+                (seq & 0xFF) as u8,
+                ((seq >> 8) & 0xFF) as u8,
+                0x40,
+                0x5B,
+                0x01,
+                0x02,
+                (target & 0xFF) as u8,
+                ((target >> 8) & 0xFF) as u8,
+                0x00,
+                0x00,
+                (cmd_id & 0xFF) as u8,
+                ((cmd_id >> 8) & 0xFF) as u8,
+                0x01,
+                wire_val,
+            ];
+            let crc = calc_frame_crc16_bytes(&body, DumlDialect::V2);
+            body.extend_from_slice(&crc);
+            Ok(body)
+        }
     }
 }
 
@@ -1192,42 +1257,101 @@ pub fn build_command_packet(
 mod tests {
     use super::*;
 
+    fn hex_to_bytes(hex_str: &str) -> Vec<u8> {
+        hex_str
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn make_duml_frame(
+        sender_pair: [u8; 2],
+        seq: u16,
+        cmd_type: u8,
+        cmd_set: u8,
+        cmd_id: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        build_frame(&RawPacketParams {
+            cmd_set,
+            cmd_id,
+            payload,
+            seq,
+            dialect: DumlDialect::V2,
+            sender: sender_pair[0],
+            receiver: sender_pair[1],
+            pack_type: cmd_type,
+        })
+    }
+
     #[test]
     fn test_crc_and_frame_roundtrip() {
-        let pkt = build_get_version_packet(42, "v1");
+        let pkt = build_get_version_packet(42, DumlDialect::V1);
         let decoded = decode_frame(&pkt).expect("should decode GetVersion packet");
         assert_eq!(decoded.seq, 42);
         assert_eq!(decoded.cmd_set, CMD_SET_GENERAL);
         assert_eq!(decoded.cmd_id, CMD_ID_GET_VERSION);
 
-        let cmd1 = build_command_packet("noise-cancel", "strong", 99, "v1", None)
+        let cmd1 = build_command_packet("noise-cancel", "strong", 99, DumlDialect::V1, None)
             .expect("should build v1 command");
         let dec1 = decode_frame(&cmd1).expect("should decode v1 command");
-        assert_eq!(dec1.dialect, "v1");
+        assert_eq!(dec1.dialect, DumlDialect::V1);
         assert_eq!(dec1.cmd_set, CMD_SET_MIC);
         assert_eq!(dec1.cmd_id, 0x01);
 
-        let cmd2 = build_command_packet("noise-cancel", "strong", 99, "v2", Some(1))
+        let cmd2 = build_command_packet("noise-cancel", "strong", 99, DumlDialect::V2, Some(1))
             .expect("should build v2 command");
         let dec2 = decode_frame(&cmd2).expect("should decode v2 command");
-        assert_eq!(dec2.dialect, "v2");
+        assert_eq!(dec2.dialect, DumlDialect::V2);
         assert_eq!(dec2.cmd_set, CMD_SET_MIC);
         assert_eq!(dec2.cmd_id, 0x01);
     }
 
     #[test]
+    fn test_corrupted_crc16_frame_is_rejected() {
+        let mut pkt = build_command_packet("low-cut", "on", 7, DumlDialect::V1, None).unwrap();
+        // Corrupt a payload byte without recomputing CRC-16 (header CRC-8 stays intact)
+        pkt[12] ^= 0x01;
+        assert!(
+            decode_frame(&pkt).is_none(),
+            "Corrupted CRC-16 frame must be strictly rejected"
+        );
+    }
+
+    #[test]
+    fn test_take_frames_handles_iap2_sync_and_corrupted_bytes() {
+        let pkt1 = build_get_version_packet(1, DumlDialect::V1);
+        let pkt2 = build_command_packet("low-cut", "on", 2, DumlDialect::V1, None).unwrap();
+        let iap2_sync = [0xFFu8, 0x55, 0x02, 0x00, 0xEE, 0x10];
+        let corrupted_hdr = [0x55u8, 0x10, 0x04, 0x00];
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&iap2_sync);
+        stream.extend_from_slice(&pkt1);
+        stream.extend_from_slice(&corrupted_hdr);
+        stream.extend_from_slice(&iap2_sync);
+        stream.extend_from_slice(&pkt2);
+
+        let frames = take_frames(&mut stream);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].raw, pkt1);
+        assert_eq!(frames[1].raw, pkt2);
+        assert!(stream.is_empty());
+    }
+
+    #[test]
     fn test_v1_live_heartbeat_decode() {
         let hex_str = "5546048b5a02ed9b005b03003900b4263a00010100380e385044584e35453033354a5058350040000000000000003220010100380e385043584e354830323432395448019e3c";
-        let mut raw = Vec::new();
-        for chunk in hex_str.as_bytes().chunks(2) {
-            raw.push(u8::from_str_radix(&String::from_utf8_lossy(chunk), 16).unwrap());
-        }
+        let raw = hex_to_bytes(hex_str);
         let frame = decode_frame(&raw).expect("should decode live v1 heartbeat");
-        assert_eq!(frame.dialect, "v1");
+        assert_eq!(frame.dialect, DumlDialect::V1);
         let mut st = DeviceStatus::default();
         apply_frame_to_status(&frame, &mut st);
         assert!(st.connected);
-        assert_eq!(st.dialect, "v1");
+        assert_eq!(st.dialect, DumlDialect::V1);
         let rx = st.rx.expect("should have rx");
         assert_eq!(rx.serial.as_deref(), Some("8PCXN5H02429TH"));
         assert_eq!(rx.firmware.as_deref(), Some("01.01.00.56"));
@@ -1238,10 +1362,70 @@ mod tests {
     }
 
     #[test]
-    fn test_battery_and_gain_helpers() {
-        assert_eq!(battery_code_to_percent(Some(1)), Some(100));
-        assert_eq!(battery_code_to_percent(Some(7)), Some(5));
+    fn test_v2_status_and_records_decode() {
+        let mut payload = vec![0u8; 41 + 32];
+        payload[0] = 0x03;
+        payload[20 - 11] = 0x28;
+        payload[21 - 11] = (2 << 5) | 0x05;
+        payload[22 - 11] = 6;
+        payload[44 - 11] = 0x01;
+        payload[48 - 11] = 0x50;
+
+        let tx_off = 41;
+        payload[tx_off + 1] = 1;
+        payload[tx_off + 6] = 0x90;
+        payload[tx_off + 7] = (3 << 2) | 0x01;
+        payload[tx_off + 9] = 0x60;
+
+        let pkt = make_duml_frame([0x16, 0x0A], 20, 0x00, 0x5B, 0x03, &payload);
+        let frame = decode_frame(&pkt).expect("should decode v2 status");
+        let mut st = DeviceStatus {
+            tx: Vec::new(), // also exercises empty tx slot guard
+            ..Default::default()
+        };
+        apply_frame_to_status(&frame, &mut st);
+        assert_eq!(st.dialect, DumlDialect::V2);
+        assert_eq!(st.gain_dial_db, Some(6));
+        assert_eq!(st.rx.unwrap().battery_percent, Some(85));
+        let tx1 = st.tx[0].as_ref().unwrap();
+        assert_eq!(tx1.battery_percent, Some(70));
+        assert_eq!(tx1.voice_tone.as_deref(), Some("rich"));
+        assert_eq!(tx1.low_cut, Some(true));
+    }
+
+    #[test]
+    fn test_decode_get_version_response() {
+        let mut payload = vec![0u8; 30];
+        payload[0..2].copy_from_slice(b"\x00\x02");
+        let model = b"DJI MIC MINI RX";
+        payload[2..2 + model.len()].copy_from_slice(model);
+        payload[22..26].copy_from_slice(&[56, 0, 1, 1]);
+        payload[26..30].copy_from_slice(&[1, 0, 0, 0]);
+
+        let pkt = make_duml_frame([0x5A, 0x02], 1, 0x80, 0x00, 0x01, &payload);
+        let frame = decode_frame(&pkt).unwrap();
+        let mut st = DeviceStatus::default();
+        apply_frame_to_status(&frame, &mut st);
+        let rx = st.rx.unwrap();
+        assert_eq!(rx.hardware_model.as_deref(), Some("DJI MIC MINI RX"));
+        assert_eq!(rx.firmware.as_deref(), Some("01.01.00.56"));
+        assert_eq!(rx.hardware_revision.as_deref(), Some("01.00.00.00"));
+    }
+
+    #[test]
+    fn test_rejects_unknown_or_destructive_commands() {
+        assert!(build_command_packet("factory-reset", "on", 1, DumlDialect::V1, None).is_err());
+        assert!(build_command_packet("reboot", "on", 1, DumlDialect::V2, None).is_err());
+    }
+
+    #[test]
+    fn test_battery_and_gain_helpers_and_hex_encode() {
+        let expected = [(1, 100), (2, 85), (3, 70), (4, 55), (5, 40), (6, 25), (7, 5)];
+        for (code, pct) in expected {
+            assert_eq!(battery_code_to_percent(Some(code)), Some(pct));
+        }
         assert_eq!(gain_step_to_db(3), Some(0));
         assert_eq!(gain_step_to_db(5), Some(12));
+        assert_eq!(hex_encode(&[0x55, 0x0A, 0xFF, 0x00]), "550aff00");
     }
 }

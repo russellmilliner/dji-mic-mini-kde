@@ -1,14 +1,15 @@
 use crate::protocol::{
-    apply_frame_to_status, build_command_packet, build_get_version_packet, take_frames,
-    DeviceStatus, DumlFrame, CMD_ID_GET_VERSION, CMD_SET_GENERAL, CMD_SET_MIC,
+    apply_frame_to_status, build_command_packet, build_frame, build_get_version_packet,
+    take_frames, DeviceStatus, DumlDialect, DumlFrame, RawPacketParams, CMD_ID_GET_VERSION,
+    CMD_SET_GENERAL, CMD_SET_MIC,
 };
+use crate::util::run_command_with_timeout;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::ffi::{c_int, c_uchar, c_uint, c_void, CStr};
+use std::ffi::{c_int, c_uchar, c_uint, c_void, CStr, CString};
 use std::fs;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::process::Command;
 use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,16 +20,16 @@ pub const INTERFACE_NUM: c_int = 6;
 pub const EP_OUT: c_uchar = 0x06;
 pub const EP_IN: c_uchar = 0x86;
 
+/// Closed HID command allowlist: only read-only paired TX queries (`0x59`, `0x5E`, `0x6A`) are permitted.
+pub const SAFE_HID_COMMANDS: &[u8] = &[0x59, 0x5E, 0x6A];
+
 pub const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/99-dji-mic.rules";
-pub const UDEV_RULE_CONTENT: &str = r#"# DJI Mic Mini / Mic 2 / Mic 3 — non-root USB (libusb) and HID (/dev/hidraw*) access
-SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0666", TAG+="uaccess"
-"#;
+pub const UDEV_RULE_CONTENT: &str = include_str!("../99-dji-mic.rules");
 
 pub const UDEV_INSTALL_ONELINER: &str = r#"sudo tee /etc/udev/rules.d/99-dji-mic.rules >/dev/null <<'EOF'
 # DJI Mic Mini / Mic 2 / Mic 3 — non-root USB (libusb) and HID (/dev/hidraw*) access
-SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0660", TAG+="uaccess"
 EOF
 sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2ca3 && sudo udevadm trigger --subsystem-match=hidraw"#;
 
@@ -188,10 +189,10 @@ fn check_node_writable(path: &str) -> bool {
     if path.is_empty() || !Path::new(path).exists() {
         return false;
     }
-    unsafe {
-        let c_path = std::ffi::CString::new(path).unwrap_or_default();
-        libc::access(c_path.as_ptr(), libc::R_OK | libc::W_OK) == 0
-    }
+    let Ok(c_path) = CString::new(path) else {
+        return false;
+    };
+    unsafe { libc::access(c_path.as_ptr(), libc::R_OK | libc::W_OK) == 0 }
 }
 
 pub fn check_udev_status(usb_info: Option<&UsbSysfsInfo>) -> UdevStatus {
@@ -207,10 +208,16 @@ pub fn check_udev_status(usb_info: Option<&UsbSysfsInfo>) -> UdevStatus {
     let mut st = UdevStatus::default();
     let rpath = Path::new(UDEV_RULE_PATH);
     st.rule_installed = rpath.exists();
+    let mut legacy_or_incomplete = false;
     if st.rule_installed {
         if let Ok(txt) = fs::read_to_string(rpath) {
             let lower = txt.to_lowercase();
-            st.rule_content_valid = lower.contains("2ca3") && lower.contains("4011");
+            let has_ids = lower.contains("2ca3") && lower.contains("4011");
+            let has_0660 = lower.contains("0660");
+            let has_0666 = lower.contains("0666");
+            let has_hidraw = lower.contains("hidraw");
+            st.rule_content_valid = has_ids && has_0660 && !has_0666 && has_hidraw;
+            legacy_or_incomplete = has_ids && !st.rule_content_valid;
         }
     }
 
@@ -229,11 +236,17 @@ pub fn check_udev_status(usb_info: Option<&UsbSysfsInfo>) -> UdevStatus {
         } else {
             st.ready = true;
             st.summary = if info.present {
-                "udev rule installed & USB/HID permissions verified".to_string()
+                "udev rule installed (0660 + uaccess) & USB/HID permissions verified".to_string()
             } else {
-                "udev rule installed & ready".to_string()
+                "udev rule installed (0660 + uaccess) & ready".to_string()
             };
         }
+    } else if legacy_or_incomplete {
+        st.ready = false;
+        st.summary = format!(
+            "{} uses legacy MODE=\"0666\" or lacks hidraw rule — install hardened 0660 + uaccess rule",
+            UDEV_RULE_PATH
+        );
     } else if info.present && st.usbfs_writable {
         st.ready = false;
         st.summary = format!(
@@ -265,27 +278,34 @@ pub fn install_udev_rule_as_root() -> (bool, String) {
     if let Err(e) = fs::write(UDEV_RULE_PATH, UDEV_RULE_CONTENT) {
         return (false, format!("Failed to write {}: {}", UDEV_RULE_PATH, e));
     }
-    let _ = Command::new("chmod")
-        .args(["0644", UDEV_RULE_PATH])
-        .status();
-    let _ = Command::new("udevadm")
-        .args(["control", "--reload-rules"])
-        .status();
-    let _ = Command::new("udevadm")
-        .args([
+    if let Err(e) = fs::set_permissions(UDEV_RULE_PATH, fs::Permissions::from_mode(0o644)) {
+        return (
+            false,
+            format!("Failed to set permissions on {}: {}", UDEV_RULE_PATH, e),
+        );
+    }
+
+    let timeout = Duration::from_secs(5);
+    let _ = run_command_with_timeout("udevadm", &["control", "--reload-rules"], timeout);
+    let _ = run_command_with_timeout(
+        "udevadm",
+        &[
             "trigger",
             "--subsystem-match=usb",
             "--attr-match=idVendor=2ca3",
-        ])
-        .status();
-    let _ = Command::new("udevadm")
-        .args(["trigger", "--subsystem-match=hidraw"])
-        .status();
+        ],
+        timeout,
+    );
+    let _ = run_command_with_timeout(
+        "udevadm",
+        &["trigger", "--subsystem-match=hidraw"],
+        timeout,
+    );
 
     (
         true,
         format!(
-            "Installed {} and reloaded udev rules successfully.",
+            "Installed {} (0660 + uaccess) and reloaded udev rules successfully.",
             UDEV_RULE_PATH
         ),
     )
@@ -315,6 +335,9 @@ pub fn query_hid_service_info(hidraw_node: &str) -> BTreeMap<String, i32> {
     }
 
     for &cmd in &[0x59u8, 0x6Au8] {
+        if !SAFE_HID_COMMANDS.contains(&cmd) {
+            continue;
+        }
         let mut req = [0u8; 64];
         req[0] = 0x55;
         req[1] = cmd;
@@ -399,6 +422,16 @@ fn usb_strerror(rc: c_int) -> String {
     }
 }
 
+pub struct RawCommandRequest<'a> {
+    pub cmd_set: u8,
+    pub cmd_id: u8,
+    pub payload: &'a [u8],
+    pub dialect: Option<DumlDialect>,
+    pub sender: u8,
+    pub receiver: u8,
+    pub pack_type: u8,
+}
+
 pub struct DjiMicDevice {
     ctx: *mut libusb_context,
     handle: *mut libusb_device_handle,
@@ -433,7 +466,7 @@ impl DjiMicDevice {
     }
 
     fn next_seq(&mut self) -> u16 {
-        self.seq = (self.seq + 1) & 0xFFFF;
+        self.seq = self.seq.wrapping_add(1);
         if self.seq == 0 {
             self.seq = 1;
         }
@@ -514,14 +547,25 @@ impl DjiMicDevice {
         if !self.is_open() {
             return Err("DJI Mic Mini is not open".to_string());
         }
-        let mut buf = data.to_vec();
+        let len_c = c_int::try_from(data.len())
+            .map_err(|_| "Bulk write payload exceeds c_int::MAX".to_string())?;
+        let mut stack_buf = [0u8; 256];
+        let mut heap_buf;
+        let ptr_mut = if data.len() <= stack_buf.len() {
+            stack_buf[..data.len()].copy_from_slice(data);
+            stack_buf.as_mut_ptr()
+        } else {
+            heap_buf = data.to_vec();
+            heap_buf.as_mut_ptr()
+        };
+
         let mut transferred: c_int = 0;
         let rc = unsafe {
             libusb_bulk_transfer(
                 self.handle,
                 EP_OUT,
-                buf.as_mut_ptr(),
-                buf.len() as c_int,
+                ptr_mut,
+                len_c,
                 &mut transferred,
                 timeout_ms,
             )
@@ -532,6 +576,9 @@ impl DjiMicDevice {
         }
         if rc != 0 {
             return Err(format!("Bulk write failed: {}", usb_strerror(rc)));
+        }
+        if transferred < 0 {
+            return Ok(0);
         }
         Ok(transferred as usize)
     }
@@ -560,8 +607,8 @@ impl DjiMicDevice {
             return Ok(Vec::new());
         }
         if transferred > 0 {
-            self.rx_buf
-                .extend_from_slice(&buf[..(transferred as usize)]);
+            let n = (transferred as usize).min(buf.len());
+            self.rx_buf.extend_from_slice(&buf[..n]);
         }
         let frames = take_frames(&mut self.rx_buf);
         for f in &frames {
@@ -571,11 +618,9 @@ impl DjiMicDevice {
     }
 
     pub fn query_rx_version(&mut self) -> bool {
-        let dialect = self.status.dialect.clone();
-        let dialects = if dialect == "v1" {
-            ["v1", "v2"]
-        } else {
-            ["v2", "v1"]
+        let dialects = match self.status.dialect {
+            DumlDialect::V1 => [DumlDialect::V1, DumlDialect::V2],
+            DumlDialect::V2 => [DumlDialect::V2, DumlDialect::V1],
         };
         for d in dialects {
             let seq = self.next_seq();
@@ -626,11 +671,9 @@ impl DjiMicDevice {
         if self.status.heartbeat_count == 0 {
             let _ = self.poll_frames(150);
         }
-        let primary = self.status.dialect.clone();
-        let dialects = if primary == "v1" {
-            ["v1", "v2"]
-        } else {
-            ["v2", "v1"]
+        let dialects = match self.status.dialect {
+            DumlDialect::V1 => [DumlDialect::V1, DumlDialect::V2],
+            DumlDialect::V2 => [DumlDialect::V2, DumlDialect::V1],
         };
 
         let mut acked = false;
@@ -664,21 +707,19 @@ impl DjiMicDevice {
         Ok(acked)
     }
 
-    pub fn send_raw_command(
-        &mut self,
-        cmd_set: u8,
-        cmd_id: u8,
-        payload: &[u8],
-        dialect: Option<&str>,
-        sender: u8,
-        receiver: u8,
-        pack_type: u8,
-    ) -> Result<Vec<DumlFrame>, String> {
-        let d = dialect.unwrap_or(&self.status.dialect).to_string();
+    pub fn send_raw_command(&mut self, req: &RawCommandRequest<'_>) -> Result<Vec<DumlFrame>, String> {
+        let d = req.dialect.unwrap_or(self.status.dialect);
         let seq = self.next_seq();
-        let pkt = crate::protocol::build_frame(
-            cmd_set, cmd_id, payload, seq, &d, sender, receiver, pack_type,
-        );
+        let pkt = build_frame(&RawPacketParams {
+            cmd_set: req.cmd_set,
+            cmd_id: req.cmd_id,
+            payload: req.payload,
+            seq,
+            dialect: d,
+            sender: req.sender,
+            receiver: req.receiver,
+            pack_type: req.pack_type,
+        });
         self.write(&pkt, 200)?;
         let mut replies = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(350);
@@ -694,5 +735,38 @@ impl DjiMicDevice {
 impl Drop for DjiMicDevice {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_safe_hid_commands_allowlist() {
+        assert_eq!(SAFE_HID_COMMANDS, &[0x59, 0x5E, 0x6A]);
+        // Factory reset (0x55) and power off (0x52) must never be permitted.
+        assert!(!SAFE_HID_COMMANDS.contains(&0x55));
+        assert!(!SAFE_HID_COMMANDS.contains(&0x52));
+    }
+
+    #[test]
+    fn test_udev_rule_content_hardened_to_0660_uaccess() {
+        assert!(UDEV_RULE_CONTENT.contains("2ca3"));
+        assert!(UDEV_RULE_CONTENT.contains("4011"));
+        assert!(UDEV_RULE_CONTENT.contains("MODE=\"0660\""));
+        assert!(UDEV_RULE_CONTENT.contains("TAG+=\"uaccess\""));
+        assert!(UDEV_RULE_CONTENT.contains("SUBSYSTEM==\"hidraw\""));
+        assert!(!UDEV_RULE_CONTENT.contains("0666"));
+
+        assert!(UDEV_INSTALL_ONELINER.contains("MODE=\"0660\""));
+        assert!(!UDEV_INSTALL_ONELINER.contains("0666"));
+    }
+
+    #[test]
+    fn test_next_seq_wraps_safely_from_u16_max() {
+        let mut dev = DjiMicDevice::new();
+        dev.seq = u16::MAX;
+        assert_eq!(dev.next_seq(), 1);
     }
 }

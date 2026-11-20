@@ -1,14 +1,17 @@
 <div align="center">
 
+<img src="assets/dji-mic-tray.png" alt="KDE DJI Mic Mini Control Icon" width="96" height="96">
+
 # KDE DJI Mic Mini Control (`dji-mic-mini-kde`)
 
-**KDE Plasma 6 / Kirigami System Tray, Live DUML v1/v2 USB Telemetry, Hardware Controller & Desktop Alert Daemon for the DJI Mic Mini (`2ca3:4011`)**
+**Native Rust + KDE Plasma 6 / Kirigami System Tray, Live DUML v1/v2 USB Telemetry, AI Room Noise Learning, Hardware Controller & CLI for DJI Mic Mini (`2ca3:4011`)**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: Linux KDE Plasma 6](https://img.shields.io/badge/Platform-KDE%20Plasma%206%20%7C%20Kirigami-1d99f3?logo=kde&logoColor=white)](https://kde.org/)
-[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
-[![USB VID:PID: 2ca3:4011](https://img.shields.io/badge/USB-2ca3%3A4011-00b4d8)](protocol.py)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20Me%20a%20Coffee-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/russellmilliner)
+[![Version](https://img.shields.io/badge/Version-v0.2.5-blue?style=for-the-badge)](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5)
+[![GitHub Release](https://img.shields.io/github/v/release/russellmilliner/dji-mic-mini-kde?style=for-the-badge&color=success&label=Latest%20Release)](https://github.com/russellmilliner/dji-mic-mini-kde/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![Stack: Rust + Qt6 / Kirigami 6](https://img.shields.io/badge/Built%20With-Rust%20%2B%20Qt6%20%2F%20Kirigami%206-1d99f3?style=for-the-badge&logo=kde&logoColor=white)](https://kde.org/)
+[![USB VID:PID: 2ca3:4011](https://img.shields.io/badge/USB-2ca3%3A4011-00b4d8?style=for-the-badge)](src/protocol.rs)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20Me%20a%20Coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/russellmilliner)
 
 </div>
 
@@ -16,31 +19,32 @@
 
 ## Overview
 
-When the **DJI Mic Mini Receiver (`2ca3:4011`)** is connected to Linux over USB-C, it enumerates as a composite USB Audio Class + iAP2/DUML Bulk Interface (`Interface 6: EP 0x86 IN / EP 0x06 OUT`) + Vendor HID (`Interface 5`) device. However, two limitations prevent standard Linux desktops from seeing wireless transmitter telemetry or battery levels:
+When the **DJI Mic Mini USB-C Receiver (`2ca3:4011`)** is plugged into a Linux system, it enumerates as a composite USB Audio Class (`snd-usb-audio`), CDC ACM virtual serial, Vendor HID (`usbhid` / `/dev/hidraw*`), and Vendor Bulk (`Interface 6: EP 0x86 IN / EP 0x06 OUT`) device. Without host activation and framing support, standard Linux desktops cannot display transmitter battery levels, toggle receiver/transmitter DSP parameters, or monitor wireless link drops:
 
-1. **Passive Receiver Mode**: The receiver only outputs `6-byte` Apple iAP2 sync frames (`ff 55 02 00 ee 10`) until the host sends a **DUML activation / status request** (`CmdSet 0x02 / CmdID 0x59` or `0x00 / 0x01`) over USB Interface 6 (`EP 0x06 OUT`).
-2. **Firmware `01.01.00.56` (`v1` Dialect) Compact Layout**: Newer DJI Mic Mini receivers use a compact `63-byte` `0x5B/0x03` heartbeat payload where each connected transmitter is encoded in a `27-byte` block with a 7-step battery gauge in `flags_byte` bits `2..4` (`(flags >> 2) & 0x07`).
+1. **Passive Receiver Activation**: The receiver transmits 6-byte Apple iAP2 sync frames (`ff 55 02 00 ee 10`) until the host initiates **DUML telemetry polling** (`0x00/0x01` GetVersion and `0x04/0x74` keepalive) over USB Interface 6 (`EP 0x06 OUT`).
+2. **DUML `v1` (`01.01.00.56`) & `v2` Frame Decoding**: Decodes both newer `01.01.00.56` `v1` heartbeats (compact `27-byte` TX blocks with a 7-step battery gauge encoded in bits `2..4`) and `v2` packets, with O(1) lookup-table CRC-8 and CRC-16 verification (`0xB92D` `v1` residue XOR).
 
-**KDE DJI Mic Mini Control** solves both problems natively without detaching the Linux USB Audio driver (`snd-usb-audio`), providing a full **KDE Plasma 6 / Kirigami** desktop control center, live system tray battery badge, desktop disconnect/low-battery notifications, PipeWire/ALSA capture controls, and a rich CLI (`dji-mic`).
+**KDE DJI Mic Mini Control** implements the entire telemetry stack, CLI (`dji-mic`), background daemon (`dji-mic-tray`), and 5-tab Kirigami desktop UI natively in **Rust + C++/Qt6**, claiming only USB Interface 6 via `libusb-1.0` so Linux audio (`snd-usb-audio` / PipeWire) keeps running uninterrupted.
 
 ---
 
 ## Key Features
 
-- **Dynamic KDE Plasma 6 System Tray & Task Manager Icon**:
-  - Live-rendered 64×64 vector microphone + wireless wave icon with real-time TX battery percentage pill (`100%`, `85%`, etc.) or red `!` disconnect badge.
-  - Synchronizes the rendered icon to `~/.local/share/icons/hicolor/` and sets `QGuiApplication.setDesktopFileName("dji-mic-tray")` so the **KDE Task Manager** displays the exact same microphone icon.
-- **Complete DUML `v1` & `v2` Telemetry**:
-  - **Transmitters (TX1 & TX2)**: Battery `%` (7-step gauge on `v1` or direct `0–100%` on `v2`), 4-bar indicator, serial number, firmware version, link state, Noise Cancellation state/level (`Weak` / `Strong`), Clip-Loss Prevention, Auto-Record, LED status, and 32-bit Float status.
-  - **Receiver (RX)**: Model name (`DJI MIC MINI RX`), Hardware Revision (`01.00.00.00` via `0x00/0x01` GetVersion), Firmware (`01.01.00.56`), Serial number, Gain dial (`-12 dB`, `-6 dB`, `0 dB`, `+6 dB`, `+12 dB`), Track Mode (`Mono`, `Stereo`, `Mono + Safety`), Low-Cut (`150 Hz`), and Auto-Off timer.
-- **Hardware & PipeWire/ALSA Controls**:
-  - Adjust Receiver Gain (`-12 dB` to `+12 dB`), toggle `150 Hz` Low-Cut Filter, switch Noise Cancellation strength (`Weak` / `Strong`), and control PipeWire/ALSA capture volume & mute in real time.
-- **Built-in `udev` Rule Verification & 1-Click Polkit Setup**:
-  - Inspects `/etc/udev/rules.d/99-dji-mic.rules`, `/dev/bus/usb/<bus>/<dev>`, and `/dev/hidraw*` write permissions in both the GUI (`Alerts, udev & Settings` tab) and CLI (`dji-mic udev --check` / `sudo dji-mic udev --install`).
-- **Desktop Popup Alerts**:
-  - Instant KDE `notify-send` / system tray popup alerts when the USB receiver is unplugged, all wireless transmitters disconnect while RX is plugged in, or any transmitter battery drops below a configurable threshold (default `25%`).
-- **KDE Plasma 6 UI Standards**:
-  - Native `Kirigami.ApplicationWindow`, `Kirigami.Theme` colors & OS font scaling, native `QQC2.TabBar` / `QQC2.TabButton` across 5 tabs, `HighContrastScrollBar`, Ploopy high-resolution `REL_WHEEL_HI_RES` wheel scroll filter, bottom status bar zoom controls (`75%`–`175%`), and instant settings persistence.
+- **5-Tab KDE Plasma 6 / Kirigami Control Center (`dji-mic-tray`)**:
+  - **Tabs**: `Overview & Telemetry`, `Hardware Controls`, `USB & Protocol Inspector`, `Alerts, udev & Settings`, and `About`, enclosed in a unified bordered container directly attached to a standard `QQC2.TabBar`.
+  - **Plasma Integration**: Dynamic version readout in window title bar and header, OS theme and accent color synchronization via `KColorSchemeManager` (`system`, `dark`, `light`), OS-scaled typography, `HighContrastScrollBar`, bottom status bar zoom (`75%`–`175%` with `Ctrl++`, `Ctrl+-`, `Ctrl+0`, and `Ctrl+Wheel`), and a C++ `REL_WHEEL_HI_RES` high-resolution wheel scroll filter for Ploopy trackballs/knobs.
+- **Hardware-Aware `KStatusNotifierItem` Tray Icon**:
+  - Dynamically renders the transmitter battery percentage badge (`100%` down to `5%`), VU activity indicator, or disconnect warning (`!`) with cached `QIcon` rasterization.
+  - Uses `KStatusNotifierItem` (`Category = Hardware`), switching automatically between `Active` (shown on the panel when a TX is linked, an app is recording from DJI Mic Mini, or the AI virtual mic is active) and `Passive` (tucked into the hidden tray drawer when idle).
+- **AI Noise Cancellation & 3-Second Room Noise Learning**:
+  - Captures a 3-second 48 kHz calibration snippet via `pw-record --raw` (avoiding ALSA `EBUSY` conflicts when apps already hold the mic), analyzes noise floor with `librnnoise.so.0` and a 4-band spectral FFT profiler (`<150 Hz`, `150–400 Hz`, `400–2500 Hz`, `>2500 Hz`), writes a sanitized PipeWire `filter-chain` config (`learned-rnnoise-filter.conf` for virtual mic `dji_mic_mini_ai_nc_source`), and calibrates TX Noise Cancellation (`Basic`/`Strong`), `150 Hz` Low-Cut filter, and Clip Limiter.
+- **KDE Notifications 6 & 15 Global Keyboard Shortcuts**:
+  - Ships `dji-mic-tray.notifyrc` with **9 individually configurable notification events** in KDE System Settings → Notifications and sends native notifications over `Qt6DBus` (`org.freedesktop.Notifications`).
+  - Registers **15 actions in `org.kde.kglobalaccel`** (`Activate` + 14 `[Desktop Action]` shortcuts) so every key feature—battery popup, mute, NC modes, AI room noise learning, low-cut, limiter, stereo/mono, safety track, LEDs—can be bound to custom KDE global hotkeys.
+- **Start on Login & Start Minimized**:
+  - Persists preferences in `$XDG_CONFIG_HOME/dji-mic-tray/config.json` (`0600` atomic writes), automatically manages `~/.config/systemd/user/dji-mic-tray.service` (`--minimized` flag sync) with XDG autostart fallback, and applies every setting immediately.
+- **Built-in `udev` Rule Inspector & Polkit Installer**:
+  - Verifies `/etc/udev/rules.d/99-dji-mic.rules`, `/dev/bus/usb/<bus>/<dev>`, and `/dev/hidraw*` write permissions (`0660` + `uaccess`) in both GUI and CLI (`dji-mic udev --check` / `sudo dji-mic udev --install` / GUI `pkexec` installer).
 
 ---
 
@@ -49,21 +53,27 @@ When the **DJI Mic Mini Receiver (`2ca3:4011`)** is connected to Linux over USB-
 ```mermaid
 flowchart LR
     subgraph HW["DJI Mic Mini Hardware (2ca3:4011)"]
-        TX["Wireless TX1 / TX2\n(8PDXN5E035JPX5)"] <-->|"2.4 GHz GFSK"| RX["USB-C Receiver RX\n(8PCXN5H02429TH)"]
+        TX["TX1 / TX2 Wireless Mics (2.4 GHz GFSK)"] <-->|"RF Link"| RX["USB-C Receiver RX"]
     end
 
     subgraph Kernel["Linux Kernel & PipeWire"]
-        IF12["IF 1 & 2: snd-usb-audio\n(ALSA / PipeWire Source)"]
-        IF5["IF 5: usbhid\n(/dev/hidraw*)"]
-        IF6["IF 6: Vendor Bulk\n(EP 0x86 IN / EP 0x06 OUT)"]
+        IF12["IF 0-2: snd-usb-audio (ALSA / PipeWire)"]
+        IF5["IF 5: usbhid (/dev/hidraw*)"]
+        IF6["IF 6: Vendor Bulk (EP 0x86 IN / EP 0x06 OUT)"]
     end
 
-    subgraph App["KDE DJI Mic Mini Control (dji-mic-mini-kde)"]
-        DEV["device.py\n(libusb-1.0 Non-Intrusive Claim)"]
-        PROTO["protocol.py\n(DUML v1/v2 Framing & CRC8/16)"]
-        AUD["audio.py\n(wpctl / pactl / amixer)"]
-        TRAY["dji-mic-tray\n(PyQt6 + Kirigami QML + Tray)"]
-        CLI["dji-mic\n(Rich CLI & udev Manager)"]
+    subgraph RustCore["Rust Core (dji-mic & dji-mic-tray)"]
+        DEV["device.rs (libusb-1.0 FFI + hidraw + udev)"]
+        PROTO["protocol.rs (DUML v1/v2 + O(1) CRC-8/16)"]
+        AUD["audio.rs (wpctl/pactl/amixer + pw-record + RNNoise)"]
+        WORK["controller/worker.rs (Background USB & Audio Thread)"]
+        IPC["controller/ipc.rs (SO_PEERCRED Unix Socket)"]
+        ALERTS["controller/{alerts,desktop,shortcuts,config,ffi}.rs"]
+    end
+
+    subgraph KDE["C++ / Qt6 / Kirigami 6 Desktop Layer"]
+        CPP["qt_bridge.cpp (KStatusNotifierItem + KColorSchemeManager + Qt6DBus)"]
+        QML["Modular QML (Main.qml + 5 Tabs + 10 Components)"]
     end
 
     RX --> IF12
@@ -72,120 +82,203 @@ flowchart LR
     IF6 <-->|"DUML 0x5B/0x03 & 0x00/0x01"| DEV
     DEV <--> PROTO
     IF12 <--> AUD
-    DEV --> TRAY
-    AUD --> TRAY
-    DEV --> CLI
+    DEV --> WORK
+    AUD --> WORK
+    WORK --> ALERTS
+    IPC <-->|"dji-mic CLI / kglobalaccel"| ALERTS
+    ALERTS <-->|"unsafe + catch_unwind JSON Snapshot FFI"| CPP
+    CPP <--> QML
 ```
 
 ---
 
-## USB Interface & Protocol Reference
+## Installation
 
-| Interface | Class / Driver | Endpoints | Purpose |
-| :--- | :--- | :--- | :--- |
-| **Interface 0–2** | `01 Audio` (`snd-usb-audio`) | `EP 0x82 IN` Isochronous | `48 kHz` 16-bit Stereo PCM Microphone Capture |
-| **Interface 3–4** | `02 CDC ACM` (`cdc_acm`) | `EP 0x81 IN`, `EP 0x01 OUT` | Virtual Serial Port (`/dev/ttyACM0`) |
-| **Interface 5** | `03 HID` (`usbhid`) | `EP 0x85 IN`, `EP 0x05 OUT` | Vendor HID (`64-byte` Report `0x01`, `/dev/hidraw*`) |
-| **Interface 6** | `FF Vendor Specific` (`libusb`) | `EP 0x86 IN`, `EP 0x06 OUT` | **Primary DUML v1/v2 Telemetry & Control Bulk Pipe** |
+> [!IMPORTANT]
+> Non-root USB and HID access requires `/etc/udev/rules.d/99-dji-mic.rules` on your Linux host (even when running the Flatpak). See [USB & HID `udev` Permissions](#usb--hid-udev-permissions-0660--uaccess) below.
 
-### Supported Safe Control Commands (`CmdSet 0x02`)
+### Option 1: Official KDE Plasma 6 Flatpak (`io.github.russellmilliner.DjiMicMiniControl`)
 
-| Command Name | `CmdSet` / `CmdID` | Values | Notes |
-| :--- | :--- | :--- | :--- |
-| **Receiver Gain** | `0x02` / `0x59` | `1`=`-12dB`, `2`=`-6dB`, `3`=`0dB`, `4`=`+6dB`, `5`=`+12dB` | Updates RX gain dial & streams new `0x5B/0x03` state |
-| **Low-Cut Filter (`150 Hz`)** | `0x02` / `0x5E` | `0`=Off, `1`=On (`150 Hz`) | Toggles RX low-cut filter |
-| **Noise Cancellation Level** | `0x02` / `0x6A` | `1`=Weak, `2`=Strong | Configures TX noise cancellation intensity |
-| **GetVersion Query** | `0x00` / `0x01` | Empty payload (`cmd_type=0x40`) | Returns RX model name, HW rev (`01.00.00.00`), and FW (`01.01.00.56`) |
-
----
-
-## Installation & `udev` Setup
-
-### 1. Configure Non-Root USB Permissions (`udev`)
-
-Check your current `udev` rule and USB device permissions:
+Built inside `org.kde.Sdk//6.11` with `org.freedesktop.Sdk.Extension.rust-stable` against `org.kde.Platform//6.11`. Download the latest `.flatpak` bundle (and `.sha256` checksum) from [GitHub Releases](https://github.com/russellmilliner/dji-mic-mini-kde/releases):
 
 ```bash
-dji-mic udev --check
-```
-
-Install the `udev` rule (`/etc/udev/rules.d/99-dji-mic.rules`) via CLI or click **"Install / Repair udev Rule (Polkit)"** inside the GUI (`Alerts, udev & Settings` tab):
-
-```bash
-sudo dji-mic udev --install
-```
-
-This creates `/etc/udev/rules.d/99-dji-mic.rules`:
-
-```udev
-# DJI Mic / Mic 2 / Mic Mini / Mic 3 — allow non-root access to USB and HID interfaces
-SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0666", TAG+="uaccess"
-```
-
-### 2. Install via Flatpak (`io.github.russellmilliner.DjiMicMiniControl`) or Systemd User Service
-
-```bash
-# Option A: Build & install the self-contained KDE Plasma 6 Flatpak bundle (org.kde.Platform//6.11)
-./scripts/build-flatpak.sh
+sha256sum -c dji-mic-mini-kde-v0.2.5-x86_64.flatpak.sha256
+flatpak install --user -y dji-mic-mini-kde-v0.2.5-x86_64.flatpak
 flatpak run io.github.russellmilliner.DjiMicMiniControl --show
+```
 
-# Option B: Enable the native KDE System Tray Daemon (systemd --user)
+### Option 2: Prebuilt Linux Release Archive (`.tar.gz`)
+
+Download `dji-mic-mini-kde-v0.2.5-linux-x86_64.tar.gz` from [GitHub Releases](https://github.com/russellmilliner/dji-mic-mini-kde/releases), verify the checksum, and run `./scripts/install.sh` (installs `dji-mic` & `dji-mic-tray` into `~/.local/bin/`, modular QML & assets into `~/.local/share/dji-mic-mini-kde/`, desktop actions, `.notifyrc`, and enables `systemd --user` service `dji-mic-tray.service`):
+
+```bash
+sha256sum -c dji-mic-mini-kde-v0.2.5-linux-x86_64.tar.gz.sha256
+tar -xzf dji-mic-mini-kde-v0.2.5-linux-x86_64.tar.gz
+cd dji-mic-mini-kde-v0.2.5-linux-x86_64
+./scripts/install.sh
+```
+
+### Option 3: Build & Install from Source
+
+#### System Build Dependencies
+
+| Distribution | Required Packages |
+| :--- | :--- |
+| **Arch / EndeavourOS** | `rust` `cargo` `pkgconf` `clang` `qt6-base` `qt6-declarative` `qt6-tools` `kirigami` `kstatusnotifieritem` `kcolorscheme` `libusb` |
+| **Fedora Workstation / KDE** | `rust` `cargo` `pkgconf-pkg-config` `gcc-c++` `qt6-qtbase-devel` `qt6-qtdeclarative-devel` `kf6-kirigami-devel` `kf6-kstatusnotifieritem-devel` `kf6-kcolorscheme-devel` `libusb1-devel` |
+| **Debian / Kubuntu / Ubuntu** | `rustc` `cargo` `pkg-config` `g++` `qt6-base-dev` `qt6-declarative-dev` `qt6-base-dev-tools` `libkf6statusnotifieritem-dev` `libkf6colorscheme-dev` `qml6-module-org-kde-kirigami` `libusb-1.0-0-dev` |
+
+Runtime audio & desktop helpers (standard on KDE Plasma 6): `pipewire`, `wireplumber`, `pipewire-pulse`, `alsa-utils`, `polkit` (`pkexec`), and `librnnoise` (optional, for AI Room Noise Learning virtual mic).
+
+```bash
+git clone https://github.com/russellmilliner/dji-mic-mini-kde.git
+cd dji-mic-mini-kde
 ./scripts/install.sh
 ```
 
 ---
 
-## CLI Usage (`dji-mic`)
+## USB & HID `udev` Permissions (`0660` + `uaccess`)
+
+Check rule and device node permissions:
 
 ```bash
-# Full color status report (USB, udev, RX, TX1/TX2 batteries, PipeWire/ALSA, raw DUML hex)
-dji-mic status
-
-# JSON output for scripts / Waybar / Polybar / Home Assistant
-dji-mic status --json
-
-# Check connection and fire a KDE desktop popup if RX or TX is disconnected or low battery
-dji-mic check-alert --min-battery 25
-
-# Continuous background monitor
-dji-mic watch --interval 3
-
-# Hardware & audio controls
-dji-mic set-gain 0          # Choices: -12, -6, 0, 6, 12
-dji-mic set-lowcut on       # Choices: on, off
-dji-mic set-nc strong       # Choices: weak, strong
-dji-mic set-volume 100      # PipeWire/ALSA capture volume (0-150%)
-dji-mic mute toggle         # Choices: on, off, toggle
-
-# Verify or install the udev rule
 dji-mic udev --check
+```
+
+Install `/etc/udev/rules.d/99-dji-mic.rules` via CLI (or click **"Install / Repair udev Rule (Polkit)"** in the GUI's `Alerts, udev & Settings` tab):
+
+```bash
 sudo dji-mic udev --install
 ```
 
----
+The embedded rule (`99-dji-mic.rules`) grants local console-session read/write access without world-writable `0666` permissions:
 
-## Security Architecture
-
-- **No `shell=True` Subprocesses**: Every external helper (`notify-send`, `wpctl`, `pactl`, `amixer`, `udevadm`, `pkexec`) is invoked via argument arrays with explicit timeouts (`timeout=2.5s`–`60s`).
-- **Closed Command Allowlist (`SAFE_HID_COMMANDS`)**: Only non-destructive audio parameter commands (`0x59` RX Gain, `0x5E` Low-Cut, `0x6A` Noise Cancellation Level) are permitted through `send_setting_command()`. Destructive commands (`0x55` Factory Reset, `0x52` Power Off) are blocked in code.
-- **Peer-Authenticated Single-Instance Socket**: The single-instance Unix domain socket (`/run/user/<uid>/dji-mic-tray.sock`) is bound inside `XDG_RUNTIME_DIR` (`0700`) with `0600` file permissions and verifies `SO_PEERCRED` (`uid == os.getuid()`) before honoring `SHOW`, `HIDE`, `TOGGLE`, or `QUIT` IPC commands.
-- **User-Only Config Permissions (`0600`)**: Settings in `~/.config/dji-mic-mini-kde/settings.json` are written atomically with `0600` permissions.
-
----
-
-## Running Automated Tests
-
-Run the full `pytest` suite (including CRC-8/CRC-16 validation, DUML stream framing, `v1`/`v2` heartbeat decoding, `0x00/0x01` GetVersion decoding, security AST audit, and headless `--ui-test` layout overflow checks across all 5 tabs):
-
-```bash
-pytest -v
+```udev
+# DJI Mic Mini / Mic 2 / Mic 3 — non-root USB (libusb) and HID (/dev/hidraw*) access
+SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="4011", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="4011", MODE="0660", TAG+="uaccess"
 ```
 
-Or run the headless Kirigami layout & overflow inspector directly:
+---
+
+## CLI Reference (`dji-mic` & `dji-mic-tray`)
+
+### `dji-mic` Subcommands
+
+When `dji-mic-tray` is already running, `dji-mic status` and `dji-mic set` automatically route requests over the authenticated Unix IPC socket so USB Interface 6 is never contended.
+
+| Command | Arguments / Flags | Description |
+| :--- | :--- | :--- |
+| `dji-mic status` | `[--json]` | Full hardware, USB topology, `udev`, RX/TX battery & VU, DUML settings, and PipeWire/ALSA report |
+| `dji-mic watch` | `[--interval SEC] [--json]` | Live terminal telemetry stream (`0.05s` minimum interval, default `0.25s`) |
+| `dji-mic set` | `<setting> [value] [--tx 1\|2]` | Apply a verified DJI Mic Mini hardware setting (run `dji-mic set` with no args to list all 13 settings) |
+| `dji-mic mute` | `[on\|off\|toggle]` | Mute, unmute, or toggle Linux ALSA/PipeWire capture mute |
+| `dji-mic volume` | `[0-100%\|+5%\|-5%]` | Get or set Linux ALSA/PipeWire capture volume (validates numeric/relative syntax) |
+| `dji-mic udev` | `[--check\|--print-rule\|--install] [--json]` | Check rule state, print `99-dji-mic.rules`, or install/reload `/etc/udev/rules.d/99-dji-mic.rules` |
+| `dji-mic raw` | `--cmd-id HEX [--cmd-set HEX] [--payload HEX] [--dialect v1\|v2]` | Send a validated hex DUML frame over Interface 6 and print decoded replies |
+
+### Supported Hardware Settings (`dji-mic set <setting> [value]`)
+
+| Setting | Target | Dialect | Allowed Values | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `noise-cancel` | `TXAll` | `v1` / `v2` | `basic` \| `strong` | Active Noise Cancellation strength |
+| `noise-cancel-power` | `TXAll` | `v2` | `on` \| `off` | Noise Cancelling power state |
+| `noise-cancel-button` | `TXAll` | `v2` | `on` \| `off` | Toggle Noise Cancellation via TX Power Button |
+| `low-cut` | `TXAll` | `v1` / `v2` | `on` \| `off` | `150 Hz` high-pass wind/rumble filter |
+| `stereo` | `RX` | `v1` / `v2` | `mono` \| `off` \| `stereo` \| `on` | Receiver audio track channel routing |
+| `safety-track` | `RX` | `v1` / `v2` | `on` \| `off` | Dual-mono `-6 dB` backup safety track on right channel |
+| `clip-limiter` | `RX` | `v1` / `v2` | `on` \| `off` | Automatic hardware clipping limiter |
+| `auto-off-15m` | `RX` | `v1` / `v2` | `on` \| `off` | Receiver 15-minute inactivity auto power-off |
+| `tx-auto-off-15m` | `TXAll` | `v2` | `on` \| `off` | Transmitter 15-minute inactivity auto power-off |
+| `camera-power` | `RX` | `v1` / `v2` | `on` \| `off` | Auto power on/off synced with host/camera USB power |
+| `plug-free` | `RX` | `v1` / `v2` | `on` \| `off` | Allow external speaker playback while receiver stays plugged in |
+| `mic-leds` | `TXAll` | `v1` / `v2` | `on` \| `off` | Transmitter status indicator LEDs |
+| `voice-tone` | `TXUnit` | `v2` | `standard` \| `rich` \| `bright` | Per-transmitter (`--tx 1\|2`) voice tone EQ preset |
+
+### `dji-mic-tray` Daemon & Shortcut Flags
+
+| Flag | Action |
+| :--- | :--- |
+| `--show` / `--toggle` / `--minimized` | Show window, toggle visibility, or launch minimized to system tray |
+| `--status` | Query the running daemon over Unix IPC (or fall back to `dji-mic status --json`) |
+| `--ui-test` | Offscreen Kirigami geometry & overflow self-test across window sizes, tabs, themes, and zoom levels |
+| `--popup-status` | Trigger an instant on-demand battery & link status notification |
+| `--toggle-mute` | Toggle system microphone mute |
+| `--toggle-nc` / `--nc-basic` / `--nc-strong` | Toggle HW noise cancelling or switch directly to `basic` / `strong` |
+| `--cycle-ai-nc` / `--toggle-virtual-mic` / `--learn-noise` | Cycle AI NC mode, toggle PipeWire AI virtual mic, or run 3s Room Noise Learning |
+| `--toggle-low-cut` / `--toggle-limiter` / `--toggle-stereo` / `--toggle-safety` / `--toggle-leds` | Toggle RX/TX hardware DSP and LED switches |
+
+---
+
+## KDE Plasma 6 Notifications & Global Shortcuts
+
+### KDE Notifications (`dji-mic-tray.notifyrc`)
+
+Installed automatically to `~/.local/share/knotifications6/dji-mic-tray.notifyrc` (and `/app/share/knotifications6/dji-mic-tray.notifyrc` in Flatpak). Customize popup style, sound, or Do Not Disturb behavior per event in **System Settings → Notifications → Applications → KDE DJI Mic Mini Control**:
+
+| Event ID | Event Name | Default Urgency | Trigger |
+| :--- | :--- | :--- | :--- |
+| `rxDisconnected` | USB Receiver Disconnected Alert | Critical | Receiver `2ca3:4011` unplugged or missing at startup |
+| `rxConnected` | USB Receiver Connected | Normal | Receiver `2ca3:4011` plugged in |
+| `txDisconnected` | Wireless Transmitter Disconnected Alert | Critical | All wireless TX units disconnect while RX is plugged in |
+| `txConnected` | Wireless Transmitter Connected | Normal | TX1 or TX2 links with the receiver |
+| `lowBattery` | Transmitter Low Battery Alert | Critical | TX battery drops at or below configured threshold (default `25%`) |
+| `micMuteChanged` | Microphone Mute & Hardware Setting Changed | Low | Global shortcut or action toggles mute or hardware state |
+| `noiseProfileLearned` | AI Room Noise Profile Learned | Low | 3-second RNNoise + spectral calibration finishes |
+| `telemetrySummary` | On-Demand Telemetry & Battery Summary | Normal | `Show Receiver & Transmitter Battery Notification` shortcut |
+| `alertTest` | Manual Alert Test | Normal | Test notification from Settings or System Tray menu |
+
+### KDE Global Shortcuts (`org.kde.kglobalaccel`)
+
+Installed via `~/.local/share/applications/dji-mic-tray.desktop` (1 primary `Activate` entry + 14 `[Desktop Action]` entries). Bind any key combination in **System Settings → Keyboard → Shortcuts → KDE DJI Mic Mini Control**:
+
+- `Activate` (`dji-mic-tray --show`) & `Toggle DJI Mic Mini Control Window` (`--toggle`)
+- `Show Receiver & Transmitter Battery Notification` (`--popup-status`)
+- `Toggle DJI Mic Mini System Microphone Mute` (`--toggle-mute`)
+- `Toggle Hardware Noise Cancellation On/Off` (`--toggle-nc`)
+- `Set Hardware Noise Cancellation: Basic (Indoor)` (`--nc-basic`) & `Strong (Noisy)` (`--nc-strong`)
+- `Cycle AI Noise Cancellation Mode (Off / HW / Learned AI / Adaptive)` (`--cycle-ai-nc`)
+- `Toggle PipeWire AI Denoised Virtual Microphone` (`--toggle-virtual-mic`)
+- `Start 3-Second AI Room Noise Learning` (`--learn-noise`)
+- `Toggle 150 Hz Low-Cut Wind/Rumble Filter` (`--toggle-low-cut`)
+- `Toggle Hardware Auto Clip Limiter` (`--toggle-limiter`)
+- `Toggle Audio Track Mode (Mono / Stereo)` (`--toggle-stereo`)
+- `Toggle -6 dB Safety Backup Track` (`--toggle-safety`)
+- `Toggle Transmitter Status LEDs On/Off` (`--toggle-leds`)
+
+---
+
+## Security & Performance Architecture
+
+- **Least-Privilege Device Access (`0660` + `uaccess`)**: `99-dji-mic.rules` restricts raw USB and `/dev/hidraw*` nodes to the active console user session (`TAG+="uaccess"`), and the GUI udev installer executes `pkexec sh -c` directly with the compile-time embedded rule—never executing user-writable binaries as root.
+- **No Shell Injection & Bounded Subprocesses**: Every external helper (`wpctl`, `pactl`, `amixer`, `pw-record`, `udevadm`, `systemctl`) runs without a shell (`Command::new(...)`), uses input validators (`is_valid_volume_spec`, hex parsers), drains pipes with strict wall-clock timeouts (`run_command_with_timeout`), and reaps detached children (`spawn_reaped`).
+- **Closed HID Command Allowlist (`SAFE_HID_COMMANDS`)**: Only verified audio/display settings in `SETTINGS_SPEC` are exposed; destructive firmware commands stay isolated from normal setting handlers.
+- **Strict DUML Framing & O(1) CRC Verification**: `decode_frame` requires valid CRC-8 header and valid `v1` or `v2` CRC-16 frame checksums (rejecting corrupted frames), uses wrapping `u16` sequence IDs, and checks negative `libusb_bulk_transfer` return codes.
+- **Hardened Rust ↔ C++/Qt FFI**: Pointer-taking `extern "C"` entry points are `unsafe` and wrapped in `std::panic::catch_unwind` with poison-safe mutex guards (`lock_unpoisoned`), `QPointer` / `std::atomic` lifetime guards across Qt event dispatch, and a single-shot cached `rust_get_ui_snapshot_json()` snapshot paired with granular Qt signals.
+- **Non-Blocking USB Worker & Authenticated IPC**: All USB I/O, PipeWire/ALSA probes, and hardware writes execute on a dedicated `dji-usb-worker` thread; the `SO_PEERCRED`-verified `0600` Unix socket (`$XDG_RUNTIME_DIR/dji-mic-tray.sock`) uses non-blocking `poll()`, I/O timeouts, and a concurrency cap; config/PipeWire files use atomic `tempfile + rename` writes (`0600` / `0644`) with sanitized comment lines.
+
+---
+
+## Development, Testing & Flatpak Packaging
+
+Run static analysis (`clippy -D warnings`) and the full unit + integration test suite (including CRC-8/16 round-trips, DUML `v1`/`v2` decoding, CLI input rejection tests, source security checks, and headless `--ui-test` layout overflow checks across all 5 tabs, themes, and zoom levels):
 
 ```bash
-QT_QPA_PLATFORM=offscreen dji-mic-tray --ui-test
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Run the headless Kirigami layout inspector directly:
+
+```bash
+QT_QPA_PLATFORM=offscreen DJI_MIC_APP_DIR="$PWD" ./target/release/dji-mic-tray --ui-test
+```
+
+Build the self-contained KDE Plasma 6 Flatpak bundle inside `org.kde.Sdk//6.11`:
+
+```bash
+./scripts/build-flatpak.sh
 ```
 
 ---
@@ -194,4 +287,5 @@ QT_QPA_PLATFORM=offscreen dji-mic-tray --ui-test
 
 - **Author**: **Russell Milliner** ([@russellmilliner](https://github.com/russellmilliner))
 - **Repository**: [github.com/russellmilliner/dji-mic-mini-kde](https://github.com/russellmilliner/dji-mic-mini-kde)
-- **Support**: If you find this tool useful, you can [Buy Me a Coffee on Ko-fi (`ko-fi.com/russellmilliner`)](https://ko-fi.com/russellmilliner).
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
+- **Support**: If this project helps your workflow, consider supporting development on [Ko-fi (`ko-fi.com/russellmilliner`)](https://ko-fi.com/russellmilliner).

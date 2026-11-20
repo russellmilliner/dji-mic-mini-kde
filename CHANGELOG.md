@@ -2,6 +2,35 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
+## [v0.2.5](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5) — 2026-11-19
+
+### 🔒 Security & Memory Safety
+- **Hardened `udev` Rules (`0660` + `uaccess`)**: Tightened `99-dji-mic.rules` and `src/device.rs` from world-writable `MODE="0666"` to `MODE="0660", TAG+="uaccess"` for both `usb` and `hidraw`, sourced cleanly via `include_str!`.
+- **PolicyKit Installer Without `sudo` on User Binaries**: Replaced `konsole -e sudo ~/.local/bin/dji-mic` with direct `pkexec` installation of the embedded `99-dji-mic.rules` content and removed all hardcoded home paths across Rust in favor of XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR`).
+- **FFI & Pointer Safety**: Marked all pointer-taking `extern "C"` FFI functions `unsafe`, wrapped all C ABI entry points in `std::panic::catch_unwind` with poison-safe mutex guards (`lock_unpoisoned`), replaced `m_lockedFlickable` with `QPointer<QQuickItem>` and `g_controller` with `std::atomic<DjiMicController*>` cleared in `~DjiMicController()`.
+- **Strict Protocol & Input Validation**: Enforced strict CRC-16 frame validation in `decode_frame` (rejecting corrupted frames instead of defaulting to `v1`), fixed wrapping `u16` sequence increment, checked negative `libusb_bulk_transfer` return lengths, added CLI volume argument validation (`normalize_volume_spec`) and strict hex validation in `dji-mic raw`, and fixed `dji-mic mute on/off` & `dji-mic-tray` shortcut exit codes.
+- **Subprocess, IPC & Flatpak Hardening**: Added strict wall-clock timeouts (`run_command_with_timeout`) and background reaping (`spawn_reaped`), bounded/timed-out concurrent Unix socket IPC with clean `poll()` shutdown, atomic `0600` config/runtime JSON writes (`write_file_atomic_mode`), config comment sanitization, and removed `org.freedesktop.Flatpak` sandbox escape from `scripts/build-flatpak.sh`.
+
+### ⚡ Performance & Resource Optimization
+- **Non-Blocking Background USB Worker (`src/controller/worker.rs`)**: Offloaded all USB polling, slow sysfs/ALSA/PipeWire probes, hardware writes, and global shortcut hardware actions off the Qt GUI main thread onto a dedicated Rust worker thread.
+- **Single-Shot JSON Snapshot FFI & Granular Signals**: Replaced ~80+ per-tick C string round-trips with a single lock-minimal `rust_get_ui_snapshot_json()` cache synced on digest changes (`telemetryChanged`, `controlsChanged`, `noiseChanged`, `configChanged`, `windowChanged`, `statusChanged`), skipping UI updates when minimized to tray.
+- **Tray Icon & QML Fixes**: Fixed `updateTrayUi()` unconditionally rasterizing two `QPixmap`s 4×/sec (and added `vuActive` to `iconSig`), replaced dynamic `Repeater` arrays in `qml/ControlsTab.qml` with static `SpectralBandBar` delegates, and throttled `dji-mic-status.json` disk writes to changed state (>=1s).
+- **O(1) CRC-16 & Native Timestamps**: Replaced the 256×256 brute-force CRC-16 search with O(1) XOR (`0xB92D`) math, lookup-table `hex_encode`, O(N) cursor-based `take_frames`, `OnceLock` `librnnoise.so.0` caching, `libc::localtime_r` + `strftime` timestamps, and `pw-record --raw` PipeWire capture for room noise profiling (fixing ALSA `EBUSY`).
+
+### 🧱 Refactoring, Testing & Packaging
+- **Modular Architecture**: Decomposed `src/controller.rs` (2,452 lines) into `src/controller/{mod,config,desktop,alerts,worker,ipc,shortcuts,ffi}.rs` + `src/util.rs`, introduced typed enums (`DumlDialect`, `SettingTarget`, `AiNcMode`, `NotificationEvent`), routed notifications natively over `Qt6DBus`, integrated native `KColorSchemeManager` theme switching, and split `qml/Main.qml` (1,898 lines) into 10 reusable components and 5 tab files.
+- **Packaging & Rust Test Suite**: Updated `scripts/install.sh` and `scripts/build-flatpak.sh` for Rust release binaries (compiled inside `org.kde.Sdk//6.11` for Flatpak) + modular QML + `.desktop` actions + `.notifyrc`, updated `README.md`, removed obsolete pre-Rust Python files (`pyproject.toml`, `tests/test_dji_mic.py`), and expanded `cargo test` with `tests/integration_tests.rs` (including headless `--ui-test`).
+
+## [v0.2.4](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.4) — 2026-11-13
+
+### Added
+- Added `knotifications6` `.notifyrc` integration (`dji-mic-tray.notifyrc`) and 15 KDE global keyboard shortcuts via `org.kde.kglobalaccel`.
+
+## [v0.2.3](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.3) — 2026-11-06
+
+### Added
+- Added Start on Login (`systemd` user unit + XDG autostart fallback) and Start Minimized to System Tray settings.
+
 ## [v0.2.3-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.3-deps) — 2026-11-13
 
 ### 📦 Bumped Dependencies (1 package)
