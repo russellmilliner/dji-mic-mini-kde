@@ -2,6 +2,14 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
+## [v0.2.5-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5-deps) — 2026-11-21
+
+### 📦 Bumped Dependencies (1 package)
+
+| Package | Previous | Updated | Scope |
+| :--- | :--- | :--- | :--- |
+| `cc` | `1.11.2` | **`1.11.3`** | Direct (`Cargo.toml`) |
+
 ## [v0.2.5](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5) — 2026-11-19
 
 ### 🔒 Security & Memory Safety
