@@ -2,13 +2,14 @@
 
 All notable changes to **KDE DJI Mic Mini Control** (`dji-mic-mini-kde`) will be documented in this file.
 
-## [v0.2.5-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5-deps) — 2026-11-21
+## [v0.2.5-deps](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5-deps) — 2026-11-27
 
-### 📦 Bumped Dependencies (1 package)
+### 📦 Bumped Dependencies (2 packages)
 
 | Package | Previous | Updated | Scope |
 | :--- | :--- | :--- | :--- |
-| `cc` | `1.11.2` | **`1.11.3`** | Direct (`Cargo.toml`) |
+| `cc` | `1.11.3` | **`1.12.0`** | Direct (`Cargo.toml`) |
+| `find-msvc-tools` | `0.1.15` | **`0.1.16`** | Lockfile (`Cargo.lock`) |
 
 ## [v0.2.5](https://github.com/russellmilliner/dji-mic-mini-kde/releases/tag/v0.2.5) — 2026-11-19
 
